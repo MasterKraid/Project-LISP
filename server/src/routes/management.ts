@@ -686,7 +686,14 @@ router.get('/admin/transactions/user/:userId', isAdmin, (req, res) => {
 
 // --- LAB REPORTS ENDPOINTS ---
 
-router.post('/reports/upload', isAdmin, upload.single('report'), (req, res) => {
+router.post('/reports/upload', isAdmin, (req, res, next) => {
+    upload.single('report')(req, res, (err) => {
+        if (err) {
+            return res.status(400).json({ message: err.message });
+        }
+        next();
+    });
+}, (req, res) => {
     if (!req.file) {
         return res.status(400).json({ message: 'No PDF file uploaded.' });
     }
@@ -834,7 +841,14 @@ router.delete('/reports/:id', isAdmin, (req, res) => {
 
 // --- ESTIMATE COMPARISON ENDPOINTS ---
 
-router.post('/comparison/upload', isAdmin, excelUpload.single('sheet'), async (req, res) => {
+router.post('/comparison/upload', isAdmin, (req, res, next) => {
+    excelUpload.single('sheet')(req, res, (err) => {
+        if (err) {
+            return res.status(400).json({ message: err.message });
+        }
+        next();
+    });
+}, async (req, res) => {
     if (!req.file) return res.status(400).json({ message: 'No Excel file uploaded.' });
 
     try {

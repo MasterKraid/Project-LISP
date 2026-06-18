@@ -210,7 +210,15 @@ export const apiService = {
       headers,
       body: formData,
       credentials: 'include'
-    }).then(res => res.ok ? res.json() : Promise.reject('Upload failed'));
+    }).then(async res => {
+      if (res.ok) return res.json();
+      let errMsg = 'Upload failed';
+      try {
+        const errJson = await res.json();
+        errMsg = errJson.message || errJson.error || errMsg;
+      } catch (e) {}
+      throw new Error(errMsg);
+    });
   },
   getReportsAdmin: (): Promise<LabReport[]> => apiFetch('/reports'),
   getReportsClient: (): Promise<LabReport[]> => apiFetch('/reports/client'),
@@ -229,7 +237,15 @@ export const apiService = {
       headers,
       body: formData,
       credentials: 'include'
-    }).then(res => res.ok ? res.json() : Promise.reject('Upload failed'));
+    }).then(async res => {
+      if (res.ok) return res.json();
+      let errMsg = 'Upload failed';
+      try {
+        const errJson = await res.json();
+        errMsg = errJson.message || errJson.error || errMsg;
+      } catch (e) {}
+      throw new Error(errMsg);
+    });
   },
   getComparisonData: (): Promise<{ tests: any[]; labs: any[]; prices: any[] }> => apiFetch('/comparison/data'),
   addComparisonTest: (name: string, prices: { lab_id: number; price: number }[]): Promise<{ id: number; message: string }> => apiFetch('/comparison/tests', { method: 'POST', body: JSON.stringify({ name, prices }) }),
