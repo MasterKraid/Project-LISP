@@ -56,9 +56,10 @@ const ManageUsers: React.FC = () => {
     };
 
     const filteredUsers = React.useMemo(() => {
+        const activeUsers = users.filter(u => u.username !== 'deleted_user');
         const query = searchTerm.toLowerCase().trim();
-        if (!query) return users;
-        return users.filter(u =>
+        if (!query) return activeUsers;
+        return activeUsers.filter(u =>
             u.username.toLowerCase().includes(query) ||
             (u.alias || '').toLowerCase().includes(query) ||
             u.id.toString().includes(query)

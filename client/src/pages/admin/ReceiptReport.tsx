@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { apiService } from '../../services/api';
-import { User, Document, Transaction } from '../../types';
+import { User, Document } from '../../types';
 import SearchableDropdown from '../../components/SearchableDropdown';
 import CleanSelect from '../../components/CleanSelect';
 
@@ -43,28 +43,21 @@ const ReceiptReport: React.FC = () => {
     });
 
     const [activeTab, setActiveTab] = useState<'BI' | 'LEDGER'>('BI');
-
-    // Ledger States
-    const [selectedLedgerClientId, setSelectedLedgerClientId] = useState<string>('');
-    const [ledgerStartDate, setLedgerStartDate] = useState<string>('');
-    const [ledgerEndDate, setLedgerEndDate] = useState<string>('');
-    const [transactions, setTransactions] = useState<Transaction[]>([]);
-    const [loadingTxs, setLoadingTxs] = useState(false);
-    const [selectedLedgerClient, setSelectedLedgerClient] = useState<User | null>(null);
+    const [showAllClients, setShowAllClients] = useState(false);
+    const [biMetrics, setBiMetrics] = useState<{ mostUsedTests: any[]; mostUsedLabs: any[] } | null>(null);
 
     useEffect(() => {
         const loadData = async () => {
             try {
                 setLoading(true);
-                const [fetchedClients, fetchedReceipts] = await Promise.all([
+                const [fetchedClients, fetchedReceipts, fetchedMetrics] = await Promise.all([
                     apiService.getClientWallets(),
-                    apiService.getReceipts()
+                    apiService.getReceipts(),
+                    apiService.getBIMetrics()
                 ]);
                 setClients(fetchedClients);
                 setReceipts(fetchedReceipts);
-                if (fetchedClients.length > 0) {
-                    setSelectedLedgerClientId(fetchedClients[0].id.toString());
-                }
+                setBiMetrics(fetchedMetrics);
             } catch (err) {
                 console.error("Failed to load report data", err);
             } finally {
@@ -73,129 +66,6 @@ const ReceiptReport: React.FC = () => {
         };
         loadData();
     }, []);
-
-    useEffect(() => {
-        if (!selectedLedgerClientId) return;
-        const clientIdNum = parseInt(selectedLedgerClientId, 10);
-        
-        setLoadingTxs(true);
-        Promise.all([
-          apiService.getTransactionsByUser(clientIdNum),
-          apiService.getUserById(clientIdNum)
-        ]).then(([txsData, clientData]) => {
-          setTransactions(txsData);
-          setSelectedLedgerClient(clientData);
-        }).catch(console.error)
-          .finally(() => setLoadingTxs(false));
-    }, [selectedLedgerClientId]);
-
-    const parseTxDate = (dateStr: string): Date => {
-      try {
-        const datePart = dateStr.split(' | ')[0]; // "DD/MM/YYYY"
-        const [d, m, y] = datePart.split('/').map(Number);
-        return new Date(y, m - 1, d);
-      } catch (e) {
-        return new Date();
-      }
-    };
-
-    const filteredTxs = useMemo(() => {
-      const chronological = [...transactions].sort((a, b) => a.id - b.id);
-      
-      return chronological.filter(tx => {
-        const txDate = parseTxDate(tx.date);
-        
-        if (ledgerStartDate) {
-          const start = new Date(ledgerStartDate);
-          start.setHours(0, 0, 0, 0);
-          if (txDate < start) return false;
-        }
-        
-        if (ledgerEndDate) {
-          const end = new Date(ledgerEndDate);
-          end.setHours(23, 59, 59, 999);
-          if (txDate > end) return false;
-        }
-        
-        return true;
-      });
-    }, [transactions, ledgerStartDate, ledgerEndDate]);
-
-    const ledgerMetrics = useMemo(() => {
-      let startingBalance = 0;
-      let totalCredits = 0;
-      let totalDebits = 0;
-      
-      if (filteredTxs.length === 0) {
-        const currentBal = selectedLedgerClient?.wallet_balance || 0;
-        return { startingBalance: currentBal, totalCredits: 0, totalDebits: 0, endingBalance: currentBal };
-      }
-
-      const firstFilteredTx = filteredTxs[0];
-      const lastFilteredTx = filteredTxs[filteredTxs.length - 1];
-
-      startingBalance = (firstFilteredTx.balance_snapshot || 0) + firstFilteredTx.amount_deducted;
-
-      filteredTxs.forEach(tx => {
-        if (tx.amount_deducted < 0) {
-          totalCredits += Math.abs(tx.amount_deducted);
-        } else {
-          totalDebits += tx.amount_deducted;
-        }
-      });
-
-      const endingBalance = lastFilteredTx.balance_snapshot || 0;
-
-      return {
-        startingBalance,
-        totalCredits,
-        totalDebits,
-        endingBalance
-      };
-    }, [filteredTxs, selectedLedgerClient]);
-
-    const clientOptions = useMemo(() => {
-      return clients.map(c => ({
-        value: c.id.toString(),
-        label: `${c.alias || c.username} [UID: ${c.id}]`
-      }));
-    }, [clients]);
-
-    const handleExportCSV = () => {
-      if (!selectedLedgerClient) return;
-      
-      const headers = ['Date', 'Type', 'Amount (INR)', 'Balance Snapshot (INR)', 'Description/Notes'];
-      const rows = filteredTxs.map(tx => {
-        const type = tx.amount_deducted < 0 ? 'CREDIT' : 'DEBIT';
-        const amount = Math.abs(tx.amount_deducted).toFixed(2);
-        const snapshot = (tx.balance_snapshot || 0).toFixed(2);
-        const notes = (tx.notes || '').replace(/,/g, ';');
-        return [tx.date, type, amount, snapshot, notes];
-      });
-
-      const csvContent = [
-        `B2B LEDGER STATEMENT - ${selectedLedgerClient.alias || selectedLedgerClient.username} (UID: ${selectedLedgerClient.id})`,
-        `Statement Period: ${ledgerStartDate || 'Beginning'} to ${ledgerEndDate || 'Present'}`,
-        `Starting Balance: INR ${ledgerMetrics.startingBalance.toFixed(2)}`,
-        `Ending Balance: INR ${ledgerMetrics.endingBalance.toFixed(2)}`,
-        '',
-        headers.join(','),
-        ...rows.map(r => r.join(','))
-      ].join('\n');
-
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `ledger_statement_${selectedLedgerClient.username}_${ledgerStartDate || 'start'}_to_${ledgerEndDate || 'end'}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    };
-
-    const handlePrint = () => {
-      window.print();
-    };
 
     // Filter logic
     const filteredReceipts = useMemo(() => {
@@ -283,7 +153,8 @@ const ReceiptReport: React.FC = () => {
             const amt = r.amount_final || parseFloat(r.display_amount.replace('₹', '').replace(/,/g, '')) || 0;
             const mrp = r.total_mrp || amt;
             const b2b = r.b2b_cost || 0;
-            const profit = r.acting_as_client_id ? b2b : amt;
+            const motherB2B = r.mother_b2b_cost || 0;
+            const profit = r.acting_as_client_id ? (b2b - motherB2B) : (amt - motherB2B);
 
             if (!groups[dateStr]) {
                 groups[dateStr] = { amount: 0, mrp: 0, b2b: 0, profit: 0, count: 0 };
@@ -317,11 +188,11 @@ const ReceiptReport: React.FC = () => {
             const cleanName = client.split(' [M.ENTRY')[0];
             groups[cleanName] = (groups[cleanName] || 0) + amt;
         });
-        return Object.entries(groups)
+        const sorted = Object.entries(groups)
             .map(([client, amount]) => ({ client, amount }))
-            .sort((a, b) => b.amount - a.amount)
-            .slice(0, 5); // Top 5 clients
-    }, [filteredReceipts]);
+            .sort((a, b) => b.amount - a.amount);
+        return showAllClients ? sorted : sorted.slice(0, 5);
+    }, [filteredReceipts, showAllClients]);
 
     const ticketSizeBuckets = useMemo(() => {
         const buckets = {
@@ -348,11 +219,13 @@ const ReceiptReport: React.FC = () => {
         let b2bSubmissions = 0; // sum of b2b_cost for B2B client receipts
         let b2bPatientBillings = 0; // sum of amount_final for B2B client receipts
         let directRetail = 0; // sum of amount_final for walk-in receipts
+        let netProfit = 0;
 
         filteredReceipts.forEach(r => {
             const amt = r.amount_final || parseFloat(r.display_amount.replace('₹', '').replace(/,/g, '')) || 0;
             const mVal = r.total_mrp || amt;
             const bVal = r.b2b_cost || 0;
+            const motherB2B = r.mother_b2b_cost || 0;
 
             amount += amt;
             mrp += mVal;
@@ -360,13 +233,12 @@ const ReceiptReport: React.FC = () => {
             if (r.acting_as_client_id) {
                 b2bSubmissions += bVal;
                 b2bPatientBillings += amt;
+                netProfit += (bVal - motherB2B);
             } else {
                 directRetail += amt;
+                netProfit += (amt - motherB2B);
             }
         });
-
-        // Net Operational Profit = Direct Retail collections + B2B wallet submissions
-        const netProfit = directRetail + b2bSubmissions;
 
         return { 
             amount, 
@@ -583,6 +455,15 @@ const ReceiptReport: React.FC = () => {
                         </div>
                     );
                 })}
+                <div className="pt-2 text-center border-t border-slate-100 mt-2">
+                    <button 
+                        type="button" 
+                        onClick={() => setShowAllClients(!showAllClients)}
+                        className="text-[10px] font-black text-indigo-600 hover:text-indigo-800 transition-colors uppercase tracking-widest"
+                    >
+                        {showAllClients ? 'Show Top 5 Only' : 'Show All Clients'}
+                    </button>
+                </div>
             </div>
         );
     };
@@ -682,23 +563,7 @@ const ReceiptReport: React.FC = () => {
                 </Link>
             </div>
 
-            {/* Print Only Brand Header */}
-            {activeTab === 'LEDGER' && selectedLedgerClient && (
-                <div className="hidden print:block border-b-2 border-slate-800 pb-4 mb-6">
-                    <div className="flex justify-between items-end">
-                        <div>
-                            <h1 className="text-3xl font-black text-slate-800 m-0">LEDGER STATEMENT</h1>
-                            <span className="text-xs text-slate-500 font-bold uppercase tracking-wider block mt-1">
-                                Generated via Project LISP Database Portal
-                            </span>
-                        </div>
-                        <div className="text-right">
-                            <h2 className="text-xl font-bold text-slate-700 m-0">{selectedLedgerClient.alias || selectedLedgerClient.username}</h2>
-                            <span className="text-xs text-slate-400 font-mono">UID: #{selectedLedgerClient.id.toString().padStart(4, '0')}</span>
-                        </div>
-                    </div>
-                </div>
-            )}
+
 
             {/* Tab Navigation */}
             <div className="flex gap-4 border-b border-gray-300 pb-px print:hidden">
@@ -957,6 +822,69 @@ const ReceiptReport: React.FC = () => {
 
                             </div>
 
+                            {/* Popular Tests & Labs Section */}
+                            {biMetrics && (
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    {/* Popular Tests */}
+                                    <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
+                                        <div className="flex items-center gap-2">
+                                            <i className="fa-solid fa-flask-vial text-indigo-600 text-xs"></i>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Top 10 Ordered Tests</h4>
+                                        </div>
+                                        <div className="pt-1 space-y-3">
+                                            {biMetrics.mostUsedTests.length === 0 ? (
+                                                <p className="text-xs text-slate-450 italic">No test data logged yet.</p>
+                                            ) : (
+                                                biMetrics.mostUsedTests.map((test, index) => {
+                                                    const maxCount = Math.max(...biMetrics.mostUsedTests.map(t => t.count), 1);
+                                                    const pct = (test.count / maxCount) * 100;
+                                                    return (
+                                                        <div key={index} className="space-y-1">
+                                                            <div className="flex justify-between items-center text-xs font-bold">
+                                                                <span className="text-slate-700 truncate max-w-[200px]">{test.name}</span>
+                                                                <span className="text-indigo-600 font-black">{test.count} orders</span>
+                                                            </div>
+                                                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                                                <div className="bg-gradient-to-r from-indigo-500 to-indigo-600 h-full rounded-full" style={{ width: `${pct}%` }}></div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* Utilized Laboratories */}
+                                    <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
+                                        <div className="flex items-center gap-2">
+                                            <i className="fa-solid fa-house-chimney-medical text-indigo-600 text-xs"></i>
+                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Laboratory Utilization Share</h4>
+                                        </div>
+                                        <div className="pt-1 space-y-3">
+                                            {biMetrics.mostUsedLabs.length === 0 ? (
+                                                <p className="text-xs text-slate-450 italic">No laboratory data logged yet.</p>
+                                            ) : (
+                                                biMetrics.mostUsedLabs.map((lab, index) => {
+                                                    const maxCount = Math.max(...biMetrics.mostUsedLabs.map(l => l.count), 1);
+                                                    const pct = (lab.count / maxCount) * 100;
+                                                    return (
+                                                        <div key={index} className="space-y-1">
+                                                            <div className="flex justify-between items-center text-xs font-bold">
+                                                                <span className="text-slate-700 truncate max-w-[200px]">{lab.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim()}</span>
+                                                                <span className="text-indigo-600 font-black">{lab.count} receipts</span>
+                                                            </div>
+                                                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                                                                <div className="bg-gradient-to-r from-emerald-500 to-teal-500 h-full rounded-full" style={{ width: `${pct}%` }}></div>
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
                             {/* Detailed Data Table */}
                             <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
                                 <div className="flex justify-between items-center">
@@ -970,7 +898,7 @@ const ReceiptReport: React.FC = () => {
                                 </div>
 
                                 <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-inner">
-                                    <table className="w-full min-w-[800px] text-left border-collapse">
+                                    <table className="w-full min-w-[1200px] text-left border-collapse">
                                         <thead className="bg-slate-50/80 sticky top-0 backdrop-blur-md">
                                             <tr className="border-b border-slate-100">
                                                 <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest pl-4 w-28">Receipt ID</th>
@@ -978,35 +906,44 @@ const ReceiptReport: React.FC = () => {
                                                 <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Patient Name</th>
                                                 <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest w-40">Customer ID</th>
                                                 <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Operator / Context</th>
-                                                <th className="p-3 text-right text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4 w-32">Transacted Value</th>
+                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Selected Laboratory</th>
+                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">B2C Gross</th>
+                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">B2B Cost</th>
+                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Mother Cost</th>
+                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Profit Margin</th>
+                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Final Payable</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-slate-50 text-xs">
-                                            {filteredReceipts.map(receipt => (
-                                                <tr key={receipt.id} className="hover:bg-slate-50/50 transition-colors">
-                                                    <td className="p-3 pl-4 font-semibold text-slate-600 font-mono">
-                                                        {receipt.display_doc_id}
-                                                    </td>
-                                                    <td className="p-3 text-slate-500 font-normal">
-                                                        {receipt.display_date}
-                                                    </td>
-                                                    <td className="p-3 text-slate-700 font-medium text-sm">
-                                                        {receipt.customer_name}
-                                                    </td>
-                                                    <td className="p-3 text-slate-500 font-mono font-normal">
-                                                        {receipt.display_customer_id}
-                                                    </td>
-                                                    <td className="p-3 text-slate-600 font-normal">
-                                                        {receipt.created_by_user}
-                                                    </td>
-                                                    <td className="p-3 text-right pr-4 font-bold text-slate-900 text-sm">
-                                                        {receipt.display_amount}
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                            {filteredReceipts.length === 0 && (
+                                        <tbody className="divide-y divide-slate-100">
+                                            {filteredReceipts.length > 0 ? (
+                                                filteredReceipts.map((r) => {
+                                                    const motherCost = r.mother_b2b_cost || 0;
+                                                    const profit = r.acting_as_client_id ? ((r.b2b_cost || 0) - motherCost) : ((r.amount_final || 0) - motherCost);
+                                                    return (
+                                                        <tr key={r.id} className="hover:bg-slate-50/50 transition-colors text-xs font-semibold text-slate-600">
+                                                            <td className="p-3 pl-4 font-mono font-bold text-slate-800">{r.display_doc_id}</td>
+                                                            <td className="p-3">{r.display_date}</td>
+                                                            <td className="p-3 font-bold text-slate-800">{r.customer_name}</td>
+                                                            <td className="p-3 font-mono text-[10px]">{r.display_customer_id}</td>
+                                                            <td className="p-3 text-[11px]">
+                                                                <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">
+                                                                    {r.created_by_user}
+                                                                </span>
+                                                            </td>
+                                                            <td className="p-3 font-bold text-indigo-700">{r.lab_name}</td>
+                                                            <td className="p-3 text-right">₹{(r.total_mrp || 0).toFixed(0)}</td>
+                                                            <td className="p-3 text-right text-indigo-600 font-bold">₹{(r.b2b_cost || 0).toFixed(0)}</td>
+                                                            <td className="p-3 text-right text-slate-400">₹{motherCost.toFixed(0)}</td>
+                                                            <td className={`p-3 text-right font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                                ₹{profit.toFixed(0)}
+                                                            </td>
+                                                            <td className="p-3 text-right font-bold text-slate-800">{r.display_amount}</td>
+                                                        </tr>
+                                                    );
+                                                })
+                                            ) : (
                                                 <tr>
-                                                    <td colSpan={6} className="p-12 text-center text-slate-400 italic font-bold tracking-widest uppercase text-xs">
+                                                    <td colSpan={11} className="p-8 text-center text-slate-400 italic">
                                                         No receipts match the selected filters.
                                                     </td>
                                                 </tr>
@@ -1019,193 +956,9 @@ const ReceiptReport: React.FC = () => {
                     )}
                 </>
             ) : (
-                <div className="space-y-6">
-                    {/* Filter Controls Panel - Hidden on Print */}
-                    <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4 print:hidden relative z-30">
-                        <div className="flex items-center gap-2 mb-2">
-                            <div className="w-1.5 h-4 bg-indigo-600 rounded-full"></div>
-                            <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Ledger Statement Filters</h3>
-                        </div>
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">
-                                    B2B Corporate Client
-                                </label>
-                                <SearchableDropdown
-                                    options={clientOptions}
-                                    value={selectedLedgerClientId}
-                                    onChange={setSelectedLedgerClientId}
-                                    placeholder="Select Client..."
-                                />
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">
-                                    Start Date Limit
-                                </label>
-                                <div className="flex items-center gap-2 bg-slate-50/50 px-3 py-1.5 border border-gray-200 rounded-xl h-[38px]">
-                                    <i className="fa-solid fa-calendar text-slate-400 text-sm"></i>
-                                    <input
-                                        type="date"
-                                        value={ledgerStartDate}
-                                        onChange={e => setLedgerStartDate(e.target.value)}
-                                        className="w-full border-none outline-none text-xs font-bold text-slate-700 font-mono bg-transparent"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="space-y-1.5">
-                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block pl-1">
-                                    End Date Limit
-                                </label>
-                                <div className="flex items-center gap-2 bg-slate-50/50 px-3 py-1.5 border border-gray-200 rounded-xl h-[38px]">
-                                    <i className="fa-solid fa-calendar text-slate-400 text-sm"></i>
-                                    <input
-                                        type="date"
-                                        value={ledgerEndDate}
-                                        onChange={e => setLedgerEndDate(e.target.value)}
-                                        className="w-full border-none outline-none text-xs font-bold text-slate-700 font-mono bg-transparent"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="flex gap-2 h-[38px] shrink-0">
-                                <button
-                                    onClick={handlePrint}
-                                    disabled={!selectedLedgerClient}
-                                    className="flex-grow sm:flex-none px-6 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-gray-200 rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50 cursor-pointer"
-                                >
-                                    <i className="fa-solid fa-print"></i> Print
-                                </button>
-                                <button
-                                    onClick={handleExportCSV}
-                                    disabled={!selectedLedgerClient}
-                                    className="flex-grow sm:flex-none px-6 py-2.5 bg-slate-900 hover:bg-black text-white rounded-xl font-bold text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-md disabled:opacity-50 cursor-pointer"
-                                >
-                                    <i className="fa-solid fa-file-csv"></i> Export CSV
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Ledger Summary Cards Block */}
-                    {selectedLedgerClient && (
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                            <div className="bg-indigo-50/75 border border-indigo-150 p-5 rounded-3xl flex justify-between items-center shadow-sm hover:scale-[1.01] transition-transform duration-200">
-                                <div className="space-y-1.5 min-w-0">
-                                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block truncate">Starting Balance</span>
-                                    <div className="text-2xl font-bold text-indigo-900 leading-none">
-                                        ₹{ledgerMetrics.startingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                    </div>
-                                </div>
-                                <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center text-base shrink-0 shadow-sm">
-                                    <i className="fa-solid fa-wallet"></i>
-                                </div>
-                            </div>
-
-                            <div className="bg-emerald-50/75 border border-emerald-150 p-5 rounded-3xl flex justify-between items-center shadow-sm hover:scale-[1.01] transition-transform duration-200">
-                                <div className="space-y-1.5 min-w-0">
-                                    <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block truncate">Total Deposits (+)</span>
-                                    <div className="text-2xl font-bold text-emerald-900 leading-none">
-                                        ₹{ledgerMetrics.totalCredits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                    </div>
-                                </div>
-                                <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center text-base shrink-0 shadow-sm">
-                                    <i className="fa-solid fa-arrow-down-long"></i>
-                                </div>
-                            </div>
-
-                            <div className="bg-rose-50/75 border border-rose-150 p-5 rounded-3xl flex justify-between items-center shadow-sm hover:scale-[1.01] transition-transform duration-200">
-                                <div className="space-y-1.5 min-w-0">
-                                    <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider block truncate">Total Debits (-)</span>
-                                    <div className="text-2xl font-bold text-rose-900 leading-none">
-                                        ₹{ledgerMetrics.totalDebits.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                    </div>
-                                </div>
-                                <div className="w-10 h-10 rounded-2xl bg-rose-100 text-rose-700 flex items-center justify-center text-base shrink-0 shadow-sm">
-                                    <i className="fa-solid fa-arrow-up-long"></i>
-                                </div>
-                            </div>
-
-                            <div className="bg-indigo-50/75 border border-indigo-150 p-5 rounded-3xl flex justify-between items-center shadow-sm hover:scale-[1.01] transition-transform duration-200">
-                                <div className="space-y-1.5 min-w-0">
-                                    <span className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider block truncate">Ending Balance</span>
-                                    <div className="text-2xl font-bold text-indigo-900 leading-none">
-                                        ₹{ledgerMetrics.endingBalance.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                                    </div>
-                                </div>
-                                <div className="w-10 h-10 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center text-base shrink-0 shadow-sm">
-                                    <i className="fa-solid fa-wallet"></i>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Ledger Registry Table */}
-                    {loadingTxs ? (
-                        <div className="flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
-                            <i className="fa-solid fa-spinner fa-spin text-2xl text-indigo-600"></i>
-                            <span className="text-xs font-bold uppercase tracking-widest italic animate-pulse">
-                                Computing ledger transactions...
-                            </span>
-                        </div>
-                    ) : (
-                        <div className="overflow-hidden border border-slate-200/80 rounded-3xl shadow-sm bg-white print:border-none">
-                            <table className="w-full min-w-[700px] text-left border-collapse bg-white print:min-w-full">
-                                <thead className="bg-slate-50/80 sticky top-0 backdrop-blur-sm z-10 text-[9px] font-bold text-slate-500 uppercase tracking-widest border-b border-slate-150 print:bg-slate-100">
-                                    <tr>
-                                        <th className="p-4 pl-6 w-36">Transaction Date</th>
-                                        <th className="p-4">Reference / Description</th>
-                                        <th className="p-4 w-28">Type</th>
-                                        <th className="p-4 text-right w-40">Debit / Credit</th>
-                                        <th className="p-4 text-right pr-6 w-40">Balance Snap</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100 text-xs text-slate-600">
-                                    {filteredTxs.map((tx) => {
-                                        const isCredit = tx.amount_deducted < 0;
-                                        return (
-                                            <tr key={tx.id} className="hover:bg-indigo-50/20 transition-colors print:hover:bg-transparent">
-                                                <td className="p-4 pl-6 font-mono font-medium text-slate-500">{tx.date.split(' | ')[0]}</td>
-                                                <td className="p-4">
-                                                    <span className="font-bold text-slate-800 block leading-tight">{tx.notes || 'N/A'}</span>
-                                                    {tx.receipt_id && (
-                                                        <span className="text-[9px] font-mono text-slate-400 font-bold block mt-0.5">
-                                                            RCPT ID: #{String(tx.receipt_id).padStart(6, '0')}
-                                                        </span>
-                                                    )}
-                                                </td>
-                                                <td className="p-4">
-                                                    {isCredit ? (
-                                                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-green-50 text-green-700 border border-green-150">
-                                                            CREDIT
-                                                        </span>
-                                                    ) : (
-                                                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-150">
-                                                            DEBIT
-                                                        </span>
-                                                    )}
-                                                </td>
-                                                <td className={`p-4 text-right font-bold text-sm ${isCredit ? 'text-green-600' : 'text-rose-600'}`}>
-                                                    {isCredit ? '+' : '-'}₹{Math.abs(tx.amount_deducted).toFixed(2)}
-                                                </td>
-                                                <td className="p-4 text-right pr-6 font-mono font-bold text-slate-750">
-                                                    ₹{(tx.balance_snapshot || 0).toFixed(2)}
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                    {filteredTxs.length === 0 && (
-                                        <tr>
-                                            <td colSpan={5} className="p-12 text-center text-slate-400 font-bold uppercase tracking-wider italic">
-                                                No ledger records transacted in this period.
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
+                <div className="bg-white p-12 rounded-3xl border border-slate-200/80 shadow-md text-center text-slate-400">
+                    <i className="fa-solid fa-folder-open text-4xl mb-3 opacity-30"></i>
+                    <p className="text-sm font-semibold uppercase tracking-wider">This space is kept blank for future ledger enhancements</p>
                 </div>
             )}
 

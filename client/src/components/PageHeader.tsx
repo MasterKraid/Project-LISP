@@ -35,7 +35,7 @@ const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBack
             </div>
             <div className="flex flex-col md:flex-row items-start md:items-center gap-4">
                 {showActingAs && hasRemoteEntryAccess && clients.length > 0 && (
-                    <div className="flex items-center gap-2 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100 min-w-[250px]">
+                    <div className="flex items-center gap-2 bg-indigo-50 px-3 py-1.5 rounded-lg border border-indigo-100 min-w-[280px]">
                         <i className="fa-solid fa-user-tie text-indigo-500 text-sm"></i>
                         <span className="text-xs font-bold text-indigo-800 uppercase tracking-wider whitespace-nowrap">Acting As:</span>
                         <div className="flex-1 flex items-center gap-2">
@@ -43,7 +43,7 @@ const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBack
                                 <SearchableDropdown
                                     options={[
                                         { value: '', label: '-- Self (Default) --' },
-                                        ...clients.map(c => ({ value: c.id.toString(), label: `${c.alias || c.username} (UID: ${c.id})` }))
+                                        ...clients.map(c => ({ value: c.id.toString(), label: `${c.alias || c.username} (UID: ${c.id}) - Bal: ₹${(c.wallet_balance || 0).toFixed(0)}` }))
                                     ]}
                                     value={actingAsClient ? actingAsClient.id.toString() : ''}
                                     onChange={(clientId) => {
@@ -57,6 +57,11 @@ const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBack
                                     placeholder="Search client..."
                                 />
                             </div>
+                            {actingAsClient && (
+                                <span className="text-[10px] font-black text-indigo-700 bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded-full shrink-0" title="Active Client Wallet Balance">
+                                    ₹{(actingAsClient.wallet_balance || 0).toFixed(2)}
+                                </span>
+                            )}
                             {actingAsClient && (
                                 <button
                                     onClick={() => {

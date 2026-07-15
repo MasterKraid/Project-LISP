@@ -141,6 +141,7 @@ export interface Document {
     num_tests?: number;
     data_entry_done?: number;
     lab_name?: string;
+    mother_b2b_cost?: number;
 }
 
 export interface LabReport {

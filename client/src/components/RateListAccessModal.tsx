@@ -171,10 +171,14 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
         try {
             setIsSavingSync(true);
 
-            // 1. Rename custom list if name changed
-            if (newListName.trim() !== '' && newListName !== clientUsername) {
-                await apiService.updatePackageListName(createdListId, newListName.trim());
+            // 1. Rename custom list with scale suffix automatically
+            let finalListName = (newListName.trim() !== '' ? newListName.trim() : clientUsername);
+            if (mark > 0) {
+                finalListName = `${finalListName} (+${mark}% Markup)`;
+            } else if (disc > 0) {
+                finalListName = `${finalListName} (-${disc}% Discount)`;
             }
+            await apiService.updatePackageListName(createdListId, finalListName);
 
             // 2. Sync clone packages from mother to new list
             await apiService.clonePackageList(createdListId, selectedListId, disc, mark);
@@ -270,7 +274,24 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
                                                             }`}>
                                                             {isSelected && <i className="fa-solid fa-check text-[8px]"></i>}
                                                         </div>
-                                                        <span className="font-semibold truncate">{list.name}</span>
+                                                        <span className="font-semibold truncate">
+                                                             {list.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim()}
+                                                         </span>
+                                                         {(() => {
+                                                             const match = list.name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i);
+                                                             if (match) {
+                                                                 return (
+                                                                     <span className={`px-1 py-0.5 rounded text-[8px] font-bold shrink-0 ml-1.5 leading-none border ${
+                                                                         isSelected 
+                                                                             ? 'bg-blue-500 text-white border-blue-400' 
+                                                                             : 'bg-indigo-50 text-indigo-600 border-indigo-100'
+                                                                     }`}>
+                                                                         {match[1]}
+                                                                     </span>
+                                                                 );
+                                                             }
+                                                             return null;
+                                                         })()}
                                                     </div>
                                                     {isMother && (
                                                         <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold border leading-none ${isSelected ? 'bg-blue-500 text-white border-blue-400' : 'bg-blue-50 text-blue-600 border-blue-100'}`}>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
-import { Lab, PackageList, Package } from '../../types';
+import { Lab, PackageList, Package, User } from '../../types';
 
 declare var ExcelJS: any;
 
@@ -9,6 +9,9 @@ const ManageLabs: React.FC = () => {
     const [labs, setLabs] = useState<Lab[]>([]);
     const [allLists, setAllLists] = useState<PackageList[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [users, setUsers] = useState<User[]>([]);
+    const [renamingListId, setRenamingListId] = useState<number | null>(null);
+    const [renamingListName, setRenamingListName] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
 
     // Form/Modal States
@@ -58,16 +61,29 @@ const ManageLabs: React.FC = () => {
     const fetchData = async () => {
         setIsLoading(true);
         try {
-            const [labsData, listsData] = await Promise.all([
+            const [labsData, listsData, usersData] = await Promise.all([
                 apiService.getLabs(),
-                apiService.getPackageLists()
+                apiService.getPackageLists(),
+                apiService.getUsers()
             ]);
             setLabs(labsData);
             setAllLists(listsData);
+            setUsers(usersData);
         } catch (error) {
             console.error("Failed to fetch lab data", error);
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleRenameList = async (listId: number) => {
+        if (!renamingListName.trim()) return;
+        try {
+            await apiService.updatePackageListName(listId, renamingListName.trim());
+            setRenamingListId(null);
+            fetchData();
+        } catch (error) {
+            alert(`Error renaming list: ${error}`);
         }
     };
 
@@ -89,7 +105,7 @@ const ManageLabs: React.FC = () => {
     };
 
     const handleDeleteLab = async (labId: number) => {
-        if (window.confirm("Are you sure you want to decommission this laboratory? This action cannot be undone.")) {
+        if (window.confirm("Are you sure you want to decommission this laboratory? This will soft-delete the lab and all of its associated rate databases, keeping historical ledger data intact. This action cannot be undone.")) {
             try {
                 await apiService.deleteLab(labId);
                 if (expandedLabId === labId) setExpandedLabId(null);
@@ -556,28 +572,99 @@ const ManageLabs: React.FC = () => {
                                                             </div>
                                                         ) : (
                                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                                {labLists.map(list => {
-                                                                    const isMotherRatelist = list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`;
-                                                                    return (
-                                                                        <div key={list.id} className="p-4 bg-white border border-gray-200 rounded-xl shadow-sm space-y-3 flex flex-col justify-between">
-                                                                            <div>
-                                                                                <div className="flex justify-between items-start">
-                                                                                    <span className="font-black text-sm text-gray-800 truncate pr-2 flex items-center gap-1.5">
-                                                                                        {list.name}
-                                                                                        {isMotherRatelist && (
-                                                                                            <span className="px-1.5 py-0.5 rounded-full text-[7.5px] font-black bg-blue-100 text-blue-800 border border-blue-200 uppercase shrink-0">
-                                                                                                Mother
+                                                                {(() => {
+                                                                    const sortedLists = [...labLists].sort((a, b) => {
+                                                                        const aIsMother = a.name.endsWith(' Mother Ratelist') && a.name === `${lab.name} Mother Ratelist`;
+                                                                        const bIsMother = b.name.endsWith(' Mother Ratelist') && b.name === `${lab.name} Mother Ratelist`;
+                                                                        if (aIsMother && !bIsMother) return -1;
+                                                                        if (!aIsMother && bIsMother) return 1;
+                                                                        return 0;
+                                                                    });
+                                                                    return sortedLists.map(list => {
+                                                                        const isMotherRatelist = list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`;
+                                                                        const match = list.name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i);
+                                                                        const cleanName = list.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim();
+                                                                        const linkedClients = users.filter(u => u.role === 'CLIENT' && u.assigned_list_ids?.includes(list.id));
+                                                                        return (
+                                                                            <div 
+                                                                                key={list.id} 
+                                                                                className={`p-4 rounded-xl border flex flex-col justify-between transition-all duration-200 ${
+                                                                                    isMotherRatelist 
+                                                                                        ? 'bg-blue-50/50 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.22)]' 
+                                                                                        : 'bg-white border-gray-200 shadow-sm'
+                                                                                }`}
+                                                                            >
+                                                                                <div>
+                                                                                    <div className="flex justify-between items-start">
+                                                                                        {renamingListId === list.id ? (
+                                                                                            <div className="flex items-center gap-1.5">
+                                                                                                <input 
+                                                                                                    type="text" 
+                                                                                                    value={renamingListName}
+                                                                                                    onChange={e => setRenamingListName(e.target.value)}
+                                                                                                    className="p-1 border border-indigo-300 rounded text-xs font-bold w-40 outline-none focus:ring-2 focus:ring-indigo-150"
+                                                                                                    autoFocus
+                                                                                                    onKeyDown={e => {
+                                                                                                        if (e.key === 'Enter') handleRenameList(list.id);
+                                                                                                        if (e.key === 'Escape') setRenamingListId(null);
+                                                                                                    }}
+                                                                                                />
+                                                                                                <button onClick={() => handleRenameList(list.id)} className="text-green-600 hover:text-green-800 p-0.5" title="Save"><i className="fa-solid fa-check text-xs"></i></button>
+                                                                                                <button onClick={() => setRenamingListId(null)} className="text-red-600 hover:text-red-800 p-0.5" title="Cancel"><i className="fa-solid fa-xmark text-xs"></i></button>
+                                                                                            </div>
+                                                                                        ) : (
+                                                                                            <span className="font-black text-sm text-gray-800 truncate pr-2 flex items-center gap-1.5 max-w-[70%]">
+                                                                                                <span className="truncate" title={cleanName}>{cleanName}</span>
+                                                                                                {match && (
+                                                                                                    <span className="px-1 py-0.5 rounded text-[8px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 leading-none shrink-0">
+                                                                                                        {match[1]}
+                                                                                                    </span>
+                                                                                                )}
+                                                                                                {isMotherRatelist && (
+                                                                                                    <span className="px-1.5 py-0.5 rounded-full text-[7.5px] font-black bg-blue-100 text-blue-800 border border-blue-200 uppercase shrink-0">
+                                                                                                        Mother
+                                                                                                    </span>
+                                                                                                )}
+                                                                                                <button 
+                                                                                                    onClick={() => {
+                                                                                                        setRenamingListId(list.id);
+                                                                                                        setRenamingListName(list.name);
+                                                                                                    }}
+                                                                                                    className="text-gray-400 hover:text-indigo-600 transition-colors p-0.5"
+                                                                                                    title="Rename Database"
+                                                                                                >
+                                                                                                    <i className="fa-solid fa-pen text-[9px]"></i>
+                                                                                                </button>
                                                                                             </span>
                                                                                         )}
-                                                                                    </span>
-                                                                                    <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase">
-                                                                                        {list.package_count || 0} items
-                                                                                    </span>
+                                                                                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase shrink-0">
+                                                                                            {list.package_count || 0} items
+                                                                                        </span>
+                                                                                    </div>
+                                                                                    <div className="text-[10px] text-gray-400 font-mono mt-0.5">DB REF ID: #{list.id}</div>
+                                                                                    
+                                                                                    {/* Linked Clients Dropdown */}
+                                                                                    <div className="flex items-center gap-1.5 mt-2 text-[10px] text-slate-500">
+                                                                                        <span className="font-bold uppercase tracking-tight">Linked Clients:</span>
+                                                                                        {linkedClients.length === 0 ? (
+                                                                                            <span className="italic text-slate-400">None</span>
+                                                                                        ) : (
+                                                                                            <select 
+                                                                                                className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] max-w-[155px] font-bold text-slate-700 outline-none cursor-pointer"
+                                                                                                defaultValue=""
+                                                                                            >
+                                                                                                <option value="" disabled>View List ({linkedClients.length})</option>
+                                                                                                {linkedClients.map(c => (
+                                                                                                    <option key={c.id} value={c.id}>
+                                                                                                        {c.alias || c.username} (UID: {c.id})
+                                                                                                    </option>
+                                                                                                ))}
+                                                                                            </select>
+                                                                                        )}
+                                                                                    </div>
                                                                                 </div>
-                                                                                <div className="text-[10px] text-gray-400 font-mono mt-0.5">DB REF ID: #{list.id}</div>
-                                                                            </div>
-
-                                                                            <div className="flex flex-wrap gap-1.5 pt-2 border-t border-gray-100">
+                                                                                
+                                                                                <div className="flex flex-wrap gap-1.5 pt-2.5 mt-2 border-t border-gray-100">
                                                                                 <button onClick={() => openInventoryModal(list)} className="px-2 py-1 bg-gray-50 hover:bg-yellow-500 hover:text-white rounded border border-gray-200 hover:border-yellow-600 transition-all font-bold text-[10px] text-gray-600 flex items-center gap-1 shadow-sm">
                                                                                     <i className="fa-solid fa-cubes text-[9px]"></i> Items
                                                                                 </button>
@@ -626,8 +713,9 @@ const ManageLabs: React.FC = () => {
                                                                                 </button>
                                                                             </div>
                                                                         </div>
-                                                                    );
-                                                                })}
+                                                                        );
+                                                                    });
+                                                                })()}
                                                             </div>
                                                         )}
                                                     </fieldset>

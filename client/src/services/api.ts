@@ -135,6 +135,7 @@ export const apiService = {
   getPendingReportAlarms: (): Promise<{ warningCount: number; alarmCount: number; criticalList: any[] }> => apiFetch('/reports/pending-alarm'),
   dismissPendingAlarm: (id: number): Promise<{ success: boolean; message: string }> => apiFetch(`/reports/dismiss-alarm/${id}`, { method: 'POST' }),
   getSystemStatus: (): Promise<any> => apiFetch('/admin/system-status'),
+  getBIMetrics: (): Promise<{ mostUsedTests: any[]; mostUsedLabs: any[] }> => apiFetch('/admin/bi-metrics'),
 
 
   // --- Admin: User Management ---

@@ -22,14 +22,14 @@ router.get('/labs', isAuthenticated, (req, res) => {
 
     try {
         if (user.role === 'ADMIN' && !isActuallyActingAs) {
-            labs = db.prepare('SELECT * FROM labs').all() as Lab[];
+            labs = db.prepare('SELECT * FROM labs WHERE is_deleted = 0').all() as Lab[];
         } else {
             labs = db.prepare(`
                 SELECT DISTINCT l.* 
                 FROM labs l 
                 JOIN lab_package_lists lpl ON l.id = lpl.lab_id 
                 JOIN user_package_list_access upla ON lpl.package_list_id = upla.package_list_id 
-                WHERE upla.user_id = ?
+                WHERE upla.user_id = ? AND l.is_deleted = 0
             `).all(effectiveUserId) as Lab[];
         }
 
@@ -85,6 +85,41 @@ router.get('/customers', isAuthenticated, (req, res) => {
         res.json(formattedCustomers);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
+
+function getReceiptMotherB2BCost(receiptId: number): number {
+    let totalMotherB2B = 0;
+    try {
+        const items = db.prepare('SELECT package_name, package_list_id FROM receipt_items WHERE receipt_id = ?').all(receiptId) as any[];
+        
+        items.forEach(item => {
+            if (!item.package_list_id) return;
+            
+            // 1. Find lab_id for this package_list_id
+            const labMapping = db.prepare('SELECT lab_id FROM lab_package_lists WHERE package_list_id = ?').get(item.package_list_id) as { lab_id: number } | undefined;
+            if (!labMapping) return;
+            
+            // 2. Find the Mother Rate List ID for this lab
+            const labObj = db.prepare('SELECT name FROM labs WHERE id = ?').get(labMapping.lab_id) as { name: string } | undefined;
+            if (!labObj) return;
+            
+            // Note: Since we soft-delete labs by appending [DELETED] ... _timestamp to the lab name,
+            // we search for the Mother Ratelist using that name as well to handle history correctly.
+            const motherListName = `${labObj.name} Mother Ratelist`;
+            const motherList = db.prepare('SELECT id FROM package_lists WHERE name = ?').get(motherListName) as { id: number } | undefined;
+            if (!motherList) return;
+            
+            // 3. Find the B2B price of this package in the Mother Rate List
+            const motherPkg = db.prepare('SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?').get(motherList.id, item.package_name) as { b2b_price: number } | undefined;
+            
+            if (motherPkg) {
+                totalMotherB2B += motherPkg.b2b_price;
+            }
+        });
+    } catch (err) {
+        console.error("Failed to compute mother B2B cost for receipt:", receiptId, err);
+    }
+    return totalMotherB2B;
+}
 
 router.get('/receipts', isAuthenticated, (req, res) => {
     const user = (req.session as any).user as User;
@@ -171,6 +206,7 @@ router.get('/receipts', isAuthenticated, (req, res) => {
                 amount_final: r.amount_final,
                 total_mrp: r.total_mrp,
                 b2b_cost: r.b2b_cost || 0,
+                mother_b2b_cost: getReceiptMotherB2BCost(r.id),
                 payment_method: r.payment_method,
                 created_by_user: creator,
                 acting_as_client_id: r.acting_as_client_id || undefined,
@@ -333,10 +369,35 @@ router.post('/labs', isAdmin, (req, res) => {
 });
 
 router.delete('/labs/:id', isAdmin, (req, res) => {
+    const labId = parseInt(req.params.id, 10);
+    if (isNaN(labId)) {
+        return res.status(400).json({ message: "Invalid Lab ID" });
+    }
     try {
-        db.prepare('DELETE FROM labs WHERE id = ?').run(req.params.id);
+        const transaction = db.transaction(() => {
+            const lab = db.prepare('SELECT name FROM labs WHERE id = ?').get(labId) as { name: string } | undefined;
+            if (!lab) throw new Error("Lab not found");
+            
+            const timestamp = Math.floor(Date.now() / 1000);
+            const deletedLabName = `[DELETED] ${lab.name}_${timestamp}`;
+            
+            // 1. Rename and soft-delete the lab
+            db.prepare('UPDATE labs SET name = ?, is_deleted = 1 WHERE id = ?').run(deletedLabName, labId);
+            
+            // 2. Rename associated package lists to free up unique name constraints
+            const lists = db.prepare('SELECT pl.id, pl.name FROM package_lists pl JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id WHERE lpl.lab_id = ?').all(labId) as any[];
+            const renameListStmt = db.prepare('UPDATE package_lists SET name = ? WHERE id = ?');
+            
+            lists.forEach(list => {
+                const deletedListName = `[DELETED] ${list.name}_${timestamp}`;
+                renameListStmt.run(deletedListName, list.id);
+            });
+        });
+        transaction();
         res.status(204).send();
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) {
+        res.status(500).json({ message: e.message });
+    }
 });
 
 router.put('/labs/:id/lists', isAdmin, (req, res) => {
@@ -1012,6 +1073,35 @@ router.delete('/comparison/labs/:id', isAdmin, (req, res) => {
     }
 });
 
+router.get('/admin/bi-metrics', isAdmin, (req, res) => {
+    try {
+        // 1. Most used tests
+        const mostUsedTests = db.prepare(`
+            SELECT package_name as name, COUNT(*) as count 
+            FROM receipt_items 
+            GROUP BY package_name 
+            ORDER BY count DESC 
+            LIMIT 10
+        `).all();
+
+        // 2. Most used labs
+        const mostUsedLabs = db.prepare(`
+            SELECT DISTINCT l.name as name, COUNT(DISTINCT r.id) as count
+            FROM labs l
+            JOIN lab_package_lists lpl ON l.id = lpl.lab_id
+            JOIN receipt_items ri ON lpl.package_list_id = ri.package_list_id
+            JOIN receipts r ON ri.receipt_id = r.id
+            GROUP BY l.name
+            ORDER BY count DESC
+            LIMIT 10
+        `).all();
+
+        res.json({ mostUsedTests, mostUsedLabs });
+    } catch (e: any) {
+        res.status(500).json({ message: e.message });
+    }
+});
+
 router.get('/admin/system-status', isAdmin, (req, res) => {
     try {
         const os = require('os');
@@ -1035,7 +1125,7 @@ router.get('/admin/system-status', isAdmin, (req, res) => {
         let freeDisk = 0;
         let diskPercentage = '0';
         try {
-            const dfOutput = execSync('df -k /home').toString().split('\n');
+            const dfOutput = execSync('df -k .').toString().split('\n');
             if (dfOutput.length > 1) {
                 const dataLine = dfOutput[1];
                 const parts = dataLine.trim().split(/\s+/);

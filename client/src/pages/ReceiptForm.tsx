@@ -85,15 +85,22 @@ const ReceiptForm: React.FC = () => {
         return () => window.removeEventListener('resize', handleResize);
     }, []);
 
-    // Fetch initial data
+    // Fetch initial data (re-run when actingAsClient proxy changes)
     useEffect(() => {
         apiService.getLabs().then(data => {
             setLabs(data);
-            if (data.length > 0 && !selectedLabId) {
-                setSelectedLabId(data[0].id.toString());
+            if (data.length > 0) {
+                const currentLabStillExists = data.some(l => l.id.toString() === selectedLabId);
+                if (!currentLabStillExists) {
+                    setSelectedLabId(data[0].id.toString());
+                }
+            } else {
+                setSelectedLabId('');
             }
+        }).catch(err => {
+            console.error("Failed to load labs", err);
         });
-    }, []);
+    }, [actingAsClient]);
 
     useEffect(() => {
         if (id) {
@@ -951,7 +958,9 @@ const ReceiptForm: React.FC = () => {
                             <h3 className="font-black text-xs text-blue-600 uppercase tracking-widest">Receipt Info</h3>
                             <div className="p-4 bg-slate-50 rounded-xl space-y-1">
                                 <p className="font-bold text-slate-800">{labs.find(l => l.id === parseInt(selectedLabId))?.name}</p>
-                                <p className="text-sm text-slate-500">{packageLists.find(p => p.id === parseInt(selectedListId))?.name}</p>
+                                {!isClientMode && (
+                                    <p className="text-sm text-slate-500">{packageLists.find(p => p.id === parseInt(selectedListId))?.name}</p>
+                                )}
                                 <p className="text-sm font-bold text-slate-600">Payment: {details.payment_method}</p>
                                 <p className="text-sm text-slate-500 font-semibold">Doctor / Reference: {details.referred_by || 'Self'}</p>
                             </div>
@@ -968,18 +977,28 @@ const ReceiptForm: React.FC = () => {
                                 <thead className="bg-slate-50">
                                     <tr>
                                         <th className="p-3 text-left font-bold text-slate-600">Package</th>
-                                        {isClientMode && <th className="p-3 text-right font-bold text-slate-600">B2B</th>}
-                                        <th className="p-3 text-right font-bold text-slate-600">MRP</th>
-                                        <th className="p-3 text-right font-bold text-slate-600">Net</th>
+                                        {isClientMode ? (
+                                            <th className="p-3 text-right font-bold text-slate-600">B2B Cost</th>
+                                        ) : (
+                                            <>
+                                                <th className="p-3 text-right font-bold text-slate-600">MRP</th>
+                                                <th className="p-3 text-right font-bold text-slate-600">Net</th>
+                                            </>
+                                        )}
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                     {items.filter(i => i.name).map((item, idx) => (
                                         <tr key={idx}>
                                             <td className="p-3 font-medium">{item.name}</td>
-                                            {isClientMode && <td className="p-3 text-right text-green-600 font-bold">₹{item.b2b_price.toFixed(0)}</td>}
-                                            <td className="p-3 text-right text-slate-400">₹{item.mrp.toFixed(0)}</td>
-                                            <td className="p-3 text-right font-bold">₹{(item.mrp * (1 - item.discount / 100)).toFixed(0)}</td>
+                                            {isClientMode ? (
+                                                <td className="p-3 text-right text-green-600 font-bold">₹{item.b2b_price.toFixed(0)}</td>
+                                            ) : (
+                                                <>
+                                                    <td className="p-3 text-right text-slate-400">₹{item.mrp.toFixed(0)}</td>
+                                                    <td className="p-3 text-right font-bold">₹{(item.mrp * (1 - item.discount / 100)).toFixed(0)}</td>
+                                                </>
+                                            )}
                                         </tr>
                                     ))}
                                 </tbody>
@@ -988,14 +1007,20 @@ const ReceiptForm: React.FC = () => {
                     </section>
 
                     <section className="bg-slate-900 text-white p-6 rounded-2xl space-y-3 shadow-2xl">
-                        <div className="flex justify-between text-sm opacity-60"><span>Gross Value</span> <span>₹{calculations.totalMrp.toFixed(2)}</span></div>
-                        {isClientMode && (
-                            <div className="flex justify-between text-sm font-bold text-green-400"><span>B2B Total Cost</span> <span>₹{calculations.totalB2B.toFixed(2)}</span></div>
+                        {isClientMode ? (
+                            <>
+                                <div className="flex justify-between text-2xl font-black text-green-400"><span>B2B TOTAL COST</span> <span>₹{calculations.totalB2B.toFixed(0)}</span></div>
+                                <div className="flex justify-between text-sm font-bold text-blue-400 pt-1"><span>Wallet Deduction</span> <span>₹{calculations.totalB2B.toFixed(0)}</span></div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="flex justify-between text-sm opacity-60"><span>Gross Value</span> <span>₹{calculations.totalMrp.toFixed(2)}</span></div>
+                                <div className="flex justify-between text-sm text-red-400 font-bold"><span>Total Discount</span> <span>- ₹{calculations.totalDiscountAmount.toFixed(2)}</span></div>
+                                <div className="flex justify-between text-2xl font-black border-t border-slate-800 pt-3 text-green-400"><span>NET PAYABLE</span> <span>₹{calculations.netPayable.toFixed(0)}</span></div>
+                                <div className="flex justify-between text-sm font-bold text-blue-400 pt-1"><span>Received</span> <span>₹{calculations.received.toFixed(0)}</span></div>
+                                <div className="flex justify-between text-lg font-black text-orange-400"><span>DUE BALANCE</span> <span>₹{calculations.amountDue.toFixed(0)}</span></div>
+                            </>
                         )}
-                        <div className="flex justify-between text-sm text-red-400 font-bold"><span>Total Discount</span> <span>- ₹{calculations.totalDiscountAmount.toFixed(2)}</span></div>
-                        <div className="flex justify-between text-2xl font-black border-t border-slate-800 pt-3 text-green-400"><span>NET PAYABLE</span> <span>₹{calculations.netPayable.toFixed(0)}</span></div>
-                        <div className="flex justify-between text-sm font-bold text-blue-400 pt-1"><span>Received</span> <span>₹{calculations.received.toFixed(0)}</span></div>
-                        <div className="flex justify-between text-lg font-black text-orange-400"><span>DUE BALANCE</span> <span>₹{calculations.amountDue.toFixed(0)}</span></div>
                     </section>
 
                     <div className="flex flex-col sm:flex-row gap-4 pt-4">

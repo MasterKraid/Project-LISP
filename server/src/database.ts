@@ -124,6 +124,40 @@ try {
     console.error("Migration check failed for packages code_name:", error);
 }
 
+// MIGRATION: Check if 'labs' table has 'is_deleted'
+try {
+    const tableInfo = db.prepare("PRAGMA table_info(labs)").all() as any[];
+    const hasIsDeleted = tableInfo.some(col => col.name === 'is_deleted');
+
+    if (tableInfo.length > 0 && !hasIsDeleted) {
+        console.log("Migrating database: Adding is_deleted column to labs...");
+        db.prepare("ALTER TABLE labs ADD COLUMN is_deleted BOOLEAN NOT NULL DEFAULT 0").run();
+    }
+} catch (error) {
+    console.error("Migration check failed for labs is_deleted:", error);
+}
+
+// MIGRATION: Clean up orphaned Mother Rate Lists from package_lists table
+try {
+    const orphanedLists = db.prepare(`
+        SELECT id, name FROM package_lists 
+        WHERE name LIKE '% Mother Ratelist' 
+          AND id NOT IN (SELECT DISTINCT package_list_id FROM lab_package_lists)
+    `).all() as any[];
+    
+    if (orphanedLists.length > 0) {
+        console.log(`Migrating database: Found ${orphanedLists.length} orphaned Mother Rate Lists. Cleaning them up...`);
+        const deleteList = db.prepare("DELETE FROM package_lists WHERE id = ?");
+        orphanedLists.forEach(list => {
+            console.log(`Deleting orphaned rate list: "${list.name}" (ID: ${list.id})`);
+            deleteList.run(list.id);
+        });
+    }
+} catch (error) {
+    console.error("Migration cleanup failed for orphaned package lists:", error);
+}
+
+
 console.log('Database connected at', dbPath);
 
 const schema = `
@@ -198,7 +232,8 @@ const schema = `
     CREATE TABLE IF NOT EXISTS labs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        logo_path TEXT
+        logo_path TEXT,
+        is_deleted BOOLEAN NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS admin_settings (
