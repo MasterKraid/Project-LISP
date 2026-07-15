@@ -11,7 +11,23 @@ const router = Router();
 
 // --- ADMIN-ONLY ROUTES ---
 
-router.get('/users', isAdmin, (req, res) => res.json(db.prepare('SELECT id, username, alias, branchId, role, master_data_entry FROM users').all()));
+router.get('/users', isAdmin, (req, res) => {
+    try {
+        const users = db.prepare('SELECT id, username, alias, branchId, role, master_data_entry FROM users').all() as any[];
+        const accesses = db.prepare('SELECT user_id, package_list_id FROM user_package_list_access').all() as any[];
+        const accessMap: { [key: number]: number[] } = {};
+        accesses.forEach((a: any) => {
+            if (!accessMap[a.user_id]) accessMap[a.user_id] = [];
+            accessMap[a.user_id].push(a.package_list_id);
+        });
+        users.forEach((u: any) => {
+            u.assigned_list_ids = accessMap[u.id] || [];
+        });
+        res.json(users);
+    } catch (e: any) {
+        res.status(500).json({ message: e.message });
+    }
+});
 router.get('/branches', isAdmin, (req, res) => res.json(db.prepare('SELECT * FROM branches').all()));
 router.get('/labs', isAuthenticated, (req, res) => {
     const user = (req.session as any).user as User;

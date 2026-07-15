@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { Lab, PackageList } from '../types';
+import { Lab, PackageList, User } from '../types';
 import { apiService } from '../services/api';
+import { RatelistLinkedClientsTooltip, RatelistMarkupTagTooltip } from './RatelistTooltips';
 
 interface RateListAccessModalProps {
     isOpen: boolean;
@@ -34,6 +35,45 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
     const [isSavingSync, setIsSavingSync] = useState(false);
 
     const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+    const [users, setUsers] = useState<User[]>([]);
+
+    const parseMarkupDiscount = (name: string) => {
+        let match = name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i);
+        if (match) {
+            const pctStr = match[1].replace('+', '').replace('-', '');
+            const isMarkup = !match[1].startsWith('-');
+            const sourceName = match[3]?.trim();
+            return { pctStr, isMarkup, sourceName };
+        }
+        match = name.match(/([+-]?\d+(?:\.\d+)?)\s*%\s*(Markup|Discount|PROFIT)?/i);
+        if (match) {
+            const value = parseFloat(match[1]);
+            const pctStr = `${Math.abs(value)}%`;
+            const type = match[2]?.toUpperCase();
+            let isMarkup = value >= 0;
+            if (type === 'DISCOUNT') {
+                isMarkup = false;
+            }
+            return { pctStr, isMarkup, sourceName: undefined };
+        }
+        return null;
+    };
+
+    const getCleanName = (name: string) => {
+        const cleaned = name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim();
+        if (cleaned.length === 0) return name;
+        return cleaned;
+    };
+
+    React.useEffect(() => {
+        if (isOpen) {
+            apiService.getUsers().then(data => {
+                setUsers(data);
+            }).catch(err => {
+                console.error("Failed to load users for tooltip", err);
+            });
+        }
+    }, [isOpen]);
 
     React.useEffect(() => {
         if (!isOpen) return;
@@ -65,9 +105,12 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
         const assignedToListIds = new Set<number>();
         const labGroups: { labName: string; lists: PackageList[] }[] = [];
 
+        // Filter out deleted lists
+        const activeLists = packageLists.filter(pl => !pl.name.startsWith('[DELETED]'));
+
         // Group by labs
         labs.forEach(lab => {
-            const lists = packageLists.filter(pl => lab.assigned_list_ids?.includes(pl.id));
+            const lists = activeLists.filter(pl => lab.assigned_list_ids?.includes(pl.id));
             lists.sort((a, b) => {
                 const aIsMother = a.name.endsWith(' Mother Ratelist') || a.name.toLowerCase().includes('mother');
                 const bIsMother = b.name.endsWith(' Mother Ratelist') || b.name.toLowerCase().includes('mother');
@@ -82,7 +125,7 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
         });
 
         // Orphans (Unassigned)
-        const orphans = packageLists.filter(pl => !assignedToListIds.has(pl.id));
+        const orphans = activeLists.filter(pl => !assignedToListIds.has(pl.id));
         if (orphans.length > 0) {
             labGroups.push({ labName: 'Unassigned Lists', lists: orphans });
         }
@@ -171,12 +214,14 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
         try {
             setIsSavingSync(true);
 
-            // 1. Rename custom list with scale suffix automatically
+            // 1. Rename custom list with scale suffix automatically including mother source list info
             let finalListName = (newListName.trim() !== '' ? newListName.trim() : clientUsername);
+            const sourceList = selectedListObj;
+            const sourceName = sourceList ? sourceList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() : 'Mother Database';
             if (mark > 0) {
-                finalListName = `${finalListName} (+${mark}% Markup)`;
+                finalListName = `${finalListName} (+${mark}% Markup from ${sourceName})`;
             } else if (disc > 0) {
-                finalListName = `${finalListName} (-${disc}% Discount)`;
+                finalListName = `${finalListName} (-${disc}% Discount from ${sourceName})`;
             }
             await apiService.updatePackageListName(createdListId, finalListName);
 
@@ -274,20 +319,26 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
                                                             }`}>
                                                             {isSelected && <i className="fa-solid fa-check text-[8px]"></i>}
                                                         </div>
-                                                        <span className="font-semibold truncate">
-                                                             {list.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim()}
-                                                         </span>
+                                                          <RatelistLinkedClientsTooltip listId={list.id} users={users} yOffset={30}>
+                                                             <span className="font-semibold truncate cursor-help border-b border-dashed border-gray-300">
+                                                                 {getCleanName(list.name)}
+                                                             </span>
+                                                         </RatelistLinkedClientsTooltip>
                                                          {(() => {
-                                                             const match = list.name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i);
-                                                             if (match) {
+                                                             const parsedInfo = parseMarkupDiscount(list.name);
+                                                             if (parsedInfo) {
+                                                                 const motherList = col.lists.find(pl => pl.name.endsWith(' Mother Ratelist') && pl.name.startsWith(col.labName));
+                                                                 const fallbackMotherName = motherList 
+                                                                     ? motherList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() 
+                                                                     : `${col.labName} Mother Ratelist`;
+                                                                 const sourceName = parsedInfo.sourceName || fallbackMotherName;
                                                                  return (
-                                                                     <span className={`px-1 py-0.5 rounded text-[8px] font-bold shrink-0 ml-1.5 leading-none border ${
-                                                                         isSelected 
-                                                                             ? 'bg-blue-500 text-white border-blue-400' 
-                                                                             : 'bg-indigo-50 text-indigo-600 border-indigo-100'
-                                                                     }`}>
-                                                                         {match[1]}
-                                                                     </span>
+                                                                     <RatelistMarkupTagTooltip 
+                                                                         pctStr={parsedInfo.pctStr} 
+                                                                         isMarkup={parsedInfo.isMarkup} 
+                                                                         motherListName={sourceName} 
+                                                                         yOffset={30}
+                                                                     />
                                                                  );
                                                              }
                                                              return null;

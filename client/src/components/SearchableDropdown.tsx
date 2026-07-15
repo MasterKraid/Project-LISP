@@ -139,7 +139,7 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                     className="w-full p-2 border rounded bg-white cursor-pointer"
                 />
                 {isOpen && filteredOptions.length > 0 && (
-                    <ul ref={listRef} className="absolute z-10 w-full bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto">
+                    <ul ref={listRef} className="absolute z-10 w-full min-w-[320px] md:min-w-[450px] right-0 md:right-auto bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto">
                         {filteredOptions.map((option, index) => (
                             <li
                                 key={option.value}

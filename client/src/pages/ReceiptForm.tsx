@@ -25,6 +25,13 @@ const ReceiptForm: React.FC = () => {
     const { user, branch, updateUser, actingAsClient, setActingAsClient } = useAuth();
     const navigate = useNavigate();
 
+    // Clear actingAsClient on unmount to prevent proxy selection leaking to other pages
+    useEffect(() => {
+        return () => {
+            setActingAsClient(null);
+        };
+    }, [setActingAsClient]);
+
     // Determine effective user role
     const isClientMode = user?.role === 'CLIENT' || actingAsClient !== null;
 

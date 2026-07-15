@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
 import { Lab, PackageList, Package, User } from '../../types';
+import SearchableDropdown from '../../components/SearchableDropdown';
+import { RatelistLinkedClientsTooltip, RatelistMarkupTagTooltip } from '../../components/RatelistTooltips';
 
 declare var ExcelJS: any;
 
@@ -10,6 +12,34 @@ const ManageLabs: React.FC = () => {
     const [allLists, setAllLists] = useState<PackageList[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [users, setUsers] = useState<User[]>([]);
+
+    const parseMarkupDiscount = (name: string) => {
+        let match = name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i);
+        if (match) {
+            const pctStr = match[1].replace('+', '').replace('-', '');
+            const isMarkup = !match[1].startsWith('-');
+            const sourceName = match[3]?.trim();
+            return { pctStr, isMarkup, sourceName };
+        }
+        match = name.match(/([+-]?\d+(?:\.\d+)?)\s*%\s*(Markup|Discount|PROFIT)?/i);
+        if (match) {
+            const value = parseFloat(match[1]);
+            const pctStr = `${Math.abs(value)}%`;
+            const type = match[2]?.toUpperCase();
+            let isMarkup = value >= 0;
+            if (type === 'DISCOUNT') {
+                isMarkup = false;
+            }
+            return { pctStr, isMarkup, sourceName: undefined };
+        }
+        return null;
+    };
+
+    const getCleanName = (name: string) => {
+        const cleaned = name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim();
+        if (cleaned.length === 0) return name;
+        return cleaned;
+    };
     const [renamingListId, setRenamingListId] = useState<number | null>(null);
     const [renamingListName, setRenamingListName] = useState('');
     const [searchTerm, setSearchTerm] = useState('');
@@ -67,7 +97,7 @@ const ManageLabs: React.FC = () => {
                 apiService.getUsers()
             ]);
             setLabs(labsData);
-            setAllLists(listsData);
+            setAllLists(listsData.filter((l: any) => !l.name.startsWith('[DELETED]')));
             setUsers(usersData);
         } catch (error) {
             console.error("Failed to fetch lab data", error);
@@ -79,7 +109,15 @@ const ManageLabs: React.FC = () => {
     const handleRenameList = async (listId: number) => {
         if (!renamingListName.trim()) return;
         try {
-            await apiService.updatePackageListName(listId, renamingListName.trim());
+            const list = allLists.find(l => l.id === listId);
+            let finalName = renamingListName.trim();
+            if (list) {
+                const match = list.name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i);
+                if (match) {
+                    finalName = `${finalName} ${match[0]}`;
+                }
+            }
+            await apiService.updatePackageListName(listId, finalName);
             setRenamingListId(null);
             fetchData();
         } catch (error) {
@@ -416,6 +454,27 @@ const ManageLabs: React.FC = () => {
             const mark = parseFloat(cloneMarkup) || 0;
 
             const res = await apiService.clonePackageList(cloneTargetList.id, sourceId, disc, mark);
+            
+            // Auto rename target list name to store markup/discount and source list name
+            const sourceList = allLists.find(l => l.id === sourceId);
+            const sourceName = sourceList ? sourceList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() : 'Mother Database';
+            const cleanTargetName = cloneTargetList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim();
+            
+            let finalTargetName = cleanTargetName;
+            if (mark > 0) {
+                finalTargetName = `${cleanTargetName} (+${mark}% Markup from ${sourceName})`;
+            } else if (disc > 0) {
+                finalTargetName = `${cleanTargetName} (-${disc}% Discount from ${sourceName})`;
+            } else {
+                finalTargetName = `${cleanTargetName} (0% Markup from ${sourceName})`;
+            }
+            
+            try {
+                await apiService.updatePackageListName(cloneTargetList.id, finalTargetName);
+            } catch (renameErr) {
+                console.error("Failed to rename rate list suffix:", renameErr);
+            }
+
             alert(res.message || "Packages synced successfully!");
             setIsCloneOpen(false);
             setCloneTargetList(null);
@@ -490,7 +549,7 @@ const ManageLabs: React.FC = () => {
                                         <div 
                                             key={lab.id} 
                                             id={`lab-accordion-${lab.id}`}
-                                            className="border border-gray-200 rounded-xl overflow-hidden shadow-sm hover:border-gray-350 transition-all bg-white"
+                                            className={`border border-gray-200 rounded-xl shadow-sm hover:border-gray-350 transition-all bg-white ${isExpanded ? 'overflow-visible' : 'overflow-hidden'}`}
                                         >
                                             {/* Lab Card Header */}
                                             <div className="p-4 bg-gray-50/50 flex flex-col sm:flex-row items-center justify-between gap-4 border-b border-gray-100 cursor-pointer" onClick={() => handleExpandLab(isExpanded ? null : lab.id)}>
@@ -581,10 +640,9 @@ const ManageLabs: React.FC = () => {
                                                                         return 0;
                                                                     });
                                                                     return sortedLists.map(list => {
-                                                                        const isMotherRatelist = list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`;
-                                                                        const match = list.name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i);
-                                                                        const cleanName = list.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim();
-                                                                        const linkedClients = users.filter(u => u.role === 'CLIENT' && u.assigned_list_ids?.includes(list.id));
+                                                                         const isMotherRatelist = list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`;
+                                                                         const parsedInfo = parseMarkupDiscount(list.name);
+                                                                         const cleanName = getCleanName(list.name);
                                                                         return (
                                                                             <div 
                                                                                 key={list.id} 
@@ -614,12 +672,23 @@ const ManageLabs: React.FC = () => {
                                                                                             </div>
                                                                                         ) : (
                                                                                             <span className="font-black text-sm text-gray-800 truncate pr-2 flex items-center gap-1.5 max-w-[70%]">
-                                                                                                <span className="truncate" title={cleanName}>{cleanName}</span>
-                                                                                                {match && (
-                                                                                                    <span className="px-1 py-0.5 rounded text-[8px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100 leading-none shrink-0">
-                                                                                                        {match[1]}
-                                                                                                    </span>
-                                                                                                )}
+                                                                                                <RatelistLinkedClientsTooltip listId={list.id} users={users}>
+                                                                                                    <span className="truncate cursor-help border-b border-dashed border-gray-400" title={cleanName}>{cleanName}</span>
+                                                                                                </RatelistLinkedClientsTooltip>
+                                                                                                 {parsedInfo && (() => {
+                                                                                                    const motherList = labLists.find(pl => pl.name.endsWith(' Mother Ratelist') && pl.name.startsWith(lab.name));
+                                                                                                    const fallbackMotherName = motherList 
+                                                                                                        ? motherList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() 
+                                                                                                        : `${lab.name} Mother Ratelist`;
+                                                                                                    const sourceName = parsedInfo.sourceName || fallbackMotherName;
+                                                                                                    return (
+                                                                                                        <RatelistMarkupTagTooltip 
+                                                                                                            pctStr={parsedInfo.pctStr} 
+                                                                                                            isMarkup={parsedInfo.isMarkup} 
+                                                                                                            motherListName={sourceName} 
+                                                                                                        />
+                                                                                                    );
+                                                                                                })()}
                                                                                                 {isMotherRatelist && (
                                                                                                     <span className="px-1.5 py-0.5 rounded-full text-[7.5px] font-black bg-blue-100 text-blue-800 border border-blue-200 uppercase shrink-0">
                                                                                                         Mother
@@ -628,7 +697,7 @@ const ManageLabs: React.FC = () => {
                                                                                                 <button 
                                                                                                     onClick={() => {
                                                                                                         setRenamingListId(list.id);
-                                                                                                        setRenamingListName(list.name);
+                                                                                                        setRenamingListName(getCleanName(list.name));
                                                                                                     }}
                                                                                                     className="text-gray-400 hover:text-indigo-600 transition-colors p-0.5"
                                                                                                     title="Rename Database"
@@ -642,26 +711,6 @@ const ManageLabs: React.FC = () => {
                                                                                         </span>
                                                                                     </div>
                                                                                     <div className="text-[10px] text-gray-400 font-mono mt-0.5">DB REF ID: #{list.id}</div>
-                                                                                    
-                                                                                    {/* Linked Clients Dropdown */}
-                                                                                    <div className="flex items-center gap-1.5 mt-2 text-[10px] text-slate-500">
-                                                                                        <span className="font-bold uppercase tracking-tight">Linked Clients:</span>
-                                                                                        {linkedClients.length === 0 ? (
-                                                                                            <span className="italic text-slate-400">None</span>
-                                                                                        ) : (
-                                                                                            <select 
-                                                                                                className="bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5 text-[9px] max-w-[155px] font-bold text-slate-700 outline-none cursor-pointer"
-                                                                                                defaultValue=""
-                                                                                            >
-                                                                                                <option value="" disabled>View List ({linkedClients.length})</option>
-                                                                                                {linkedClients.map(c => (
-                                                                                                    <option key={c.id} value={c.id}>
-                                                                                                        {c.alias || c.username} (UID: {c.id})
-                                                                                                    </option>
-                                                                                                ))}
-                                                                                            </select>
-                                                                                        )}
-                                                                                    </div>
                                                                                 </div>
                                                                                 
                                                                                 <div className="flex flex-wrap gap-1.5 pt-2.5 mt-2 border-t border-gray-100">
@@ -731,20 +780,20 @@ const ManageLabs: React.FC = () => {
                                                                 <span className="text-sm font-bold text-gray-800 uppercase tracking-tight">Link Existing Database</span>
                                                             </legend>
                                                             <div className="flex gap-2 items-center mt-1">
-                                                                <select 
-                                                                    className="flex-grow p-2 border border-gray-205 rounded-lg text-xs bg-slate-50 focus:bg-white outline-none h-[34px]"
-                                                                    value={quickAssignListId[lab.id] || ''}
-                                                                    onChange={e => setQuickAssignListId(prev => ({ ...prev, [lab.id]: e.target.value }))}
-                                                                >
-                                                                    <option value="">-- Choose Database --</option>
-                                                                    {allLists
-                                                                        .filter(l => !lab.assigned_list_ids?.includes(l.id))
-                                                                        .map(l => (
-                                                                            <option key={l.id} value={l.id}>{l.name} (#{l.id})</option>
-                                                                        ))
-                                                                    }
-                                                                </select>
-                                                                <button onClick={() => handleQuickAssignList(lab.id)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs shadow-sm transition-all h-[34px]">
+                                                                <div className="flex-grow">
+                                                                    <SearchableDropdown
+                                                                        options={[
+                                                                            { value: '', label: '-- Choose Database --' },
+                                                                            ...allLists
+                                                                                .filter(l => !lab.assigned_list_ids?.includes(l.id))
+                                                                                .map(l => ({ value: l.id.toString(), label: `${l.name} (#${l.id})` }))
+                                                                        ]}
+                                                                        value={quickAssignListId[lab.id] || ''}
+                                                                        onChange={val => setQuickAssignListId(prev => ({ ...prev, [lab.id]: val }))}
+                                                                        placeholder="Search database..."
+                                                                    />
+                                                                </div>
+                                                                <button onClick={() => handleQuickAssignList(lab.id)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs shadow-sm transition-all h-[38px] shrink-0">
                                                                     Assign
                                                                 </button>
                                                             </div>
@@ -1011,20 +1060,17 @@ const ManageLabs: React.FC = () => {
                                     </legend>
                                     <div className="space-y-1">
                                         <label className="text-[9px] font-bold text-slate-400 uppercase pl-0.5">Select Source / Mother Ratelist</label>
-                                        <select 
-                                            required
-                                            className="w-full p-2 border border-gray-200 rounded-lg bg-white font-semibold text-xs text-slate-700 focus:ring-2 focus:ring-blue-100 outline-none"
+                                        <SearchableDropdown
+                                            options={[
+                                                { value: '', label: '-- Select Source Database --' },
+                                                ...allLists
+                                                    .filter(l => l.id !== cloneTargetList.id)
+                                                    .map(l => ({ value: l.id.toString(), label: `${l.name} (${l.package_count || 0} items)` }))
+                                            ]}
                                             value={cloneSourceListId}
-                                            onChange={e => setCloneSourceListId(e.target.value)}
-                                        >
-                                            <option value="">-- Select Source Database --</option>
-                                            {allLists
-                                                .filter(l => l.id !== cloneTargetList.id)
-                                                .map(l => (
-                                                    <option key={l.id} value={l.id}>{l.name} ({l.package_count || 0} items)</option>
-                                                ))
-                                            }
-                                        </select>
+                                            onChange={val => setCloneSourceListId(val)}
+                                            placeholder="Search source database..."
+                                        />
                                     </div>
                                 </fieldset>
 
