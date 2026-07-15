@@ -5,7 +5,7 @@ import CleanSelect from '../components/CleanSelect';
 import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
 import { Lab, PackageList, Package } from '../types';
-import MultiSelectSearch from '../components/MultiSelectSearch';
+import MultiSelectSearchWithSummary from '../components/MultiSelectSearchWithSummary';
 
 const ClientRatelist: React.FC = () => {
     const { user } = useAuth();
@@ -250,7 +250,7 @@ const ClientRatelist: React.FC = () => {
                     </legend>
                     
                     <div className="mb-4 sticky top-0 bg-white z-20 py-3 border-b border-slate-100">
-                        <MultiSelectSearch 
+                        <MultiSelectSearchWithSummary 
                             options={dropdownOptions}
                             selectedValues={selectedTests}
                             onChange={setSelectedTests}
