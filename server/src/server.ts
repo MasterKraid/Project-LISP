@@ -234,6 +234,18 @@ app.use('/lab_reports', requireAuthForReports, express.static(path.join(__dirnam
 // --- Serve React App in Production ---
 if (process.env.NODE_ENV === 'production') {
     const clientBuildPath = path.resolve(__dirname, '..', '..', 'client', 'dist');
+    
+    // Prevent browser caching of sw.js and index.html so updates are immediately detected
+    app.use((req, res, next) => {
+        const url = req.url.split('?')[0];
+        if (url === '/' || url === '/index.html' || url === '/sw.js') {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+        next();
+    });
+
     app.use(express.static(clientBuildPath));
 
     app.get('*', (req, res) => {

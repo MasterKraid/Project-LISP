@@ -24,11 +24,11 @@ function ReloadPrompt() {
 
   useEffect(() => {
     if (needRefresh) {
+      console.log('Auto-reloading for PWA update immediately...');
+      updateServiceWorker(true);
       const timer = setTimeout(() => {
-        console.log('Auto-reloading for PWA update after 5 seconds...');
-        updateServiceWorker(true);
         window.location.reload();
-      }, 5000);
+      }, 500);
 
       return () => clearTimeout(timer);
     }
@@ -42,10 +42,18 @@ function ReloadPrompt() {
       }
     };
 
+    // Poll for updates every 5 seconds
+    const pollInterval = setInterval(() => {
+      if (registrationRef.current) {
+        registrationRef.current.update().catch(console.error);
+      }
+    }, 5000);
+
     document.addEventListener('visibilitychange', handleReopen);
     window.addEventListener('focus', handleReopen);
 
     return () => {
+      clearInterval(pollInterval);
       document.removeEventListener('visibilitychange', handleReopen);
       window.removeEventListener('focus', handleReopen);
     };
@@ -62,23 +70,12 @@ function ReloadPrompt() {
         <div className="flex items-start gap-4">
           <div className="flex-grow">
             {needRefresh ? (
-              <span className="text-sm text-gray-800">New content available, click on reload button to update.</span>
+              <span className="text-sm text-gray-800">New content available, reloading...</span>
             ) : (
               <span className="text-sm text-gray-800">App is ready to work offline!</span>
             )}
           </div>
           <div className="flex gap-2">
-            {needRefresh && (
-              <button
-                className="px-3 py-1 bg-blue-600 text-white rounded text-sm font-semibold hover:bg-blue-700 transition-colors"
-                onClick={() => {
-                  updateServiceWorker(true);
-                  window.location.reload();
-                }}
-              >
-                Reload
-              </button>
-            )}
             <button className="px-3 py-1 bg-gray-200 hover:bg-gray-300 rounded text-sm transition-colors" onClick={() => close()}>
               Close
             </button>

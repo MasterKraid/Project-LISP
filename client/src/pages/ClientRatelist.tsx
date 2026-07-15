@@ -291,14 +291,8 @@ const ClientRatelist: React.FC = () => {
                     )}
                     */}
                     
-                    <div className="pt-4 flex justify-between">
+                    <div className="pt-4 flex justify-start">
                         <button type="button" onClick={goBack} className="px-6 py-2.5 bg-slate-100 text-slate-700 rounded-xl font-bold hover:bg-slate-200 transition-colors">Back</button>
-                        <button 
-                            type="submit"
-                            className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-md shadow-blue-200 transition-colors"
-                        >
-                            View Summary
-                        </button>
                     </div>
                 </fieldset>
             </form>

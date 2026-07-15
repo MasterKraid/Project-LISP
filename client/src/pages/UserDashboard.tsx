@@ -6,8 +6,12 @@ import { ReceiptIcon, EstimateIcon, CustomersIcon, LogoutIcon, WalletIcon, Ratel
 import { sendLocalNotification } from '../utils/notifications';
 
 const UserDashboard: React.FC = () => {
-  const { user, branch, logout } = useAuth();
+  const { user, branch, logout, setActingAsClient } = useAuth();
   const [unreadReports, setUnreadReports] = useState(0);
+
+  // Clear acting-as-client when returning to dashboard
+  useEffect(() => { setActingAsClient(null); }, [setActingAsClient]);
+
   
   useEffect(() => {
     if (user?.role === 'CLIENT') {

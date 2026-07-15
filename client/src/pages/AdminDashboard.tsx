@@ -6,8 +6,12 @@ import { ReceiptIcon, EstimateIcon, ViewIcon, CustomersIcon, LabsIcon, BranchesI
 import { sendLocalNotification } from '../utils/notifications';
 
 const AdminDashboard: React.FC = () => {
-    const { user, branch, logout } = useAuth();
+    const { user, branch, logout, setActingAsClient } = useAuth();
     const [alarms, setAlarms] = useState<{ warningCount: number; alarmCount: number; criticalList: any[] } | null>(null);
+
+    // Clear acting-as-client when returning to dashboard
+    useEffect(() => { setActingAsClient(null); }, [setActingAsClient]);
+
 
     useEffect(() => {
         apiService.getPendingReportAlarms()
