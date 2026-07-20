@@ -219,7 +219,7 @@ const ReceiptReport: React.FC = () => {
         let b2bSubmissions = 0; // sum of b2b_cost for B2B client receipts
         let b2bPatientBillings = 0; // sum of amount_final for B2B client receipts
         let directRetail = 0; // sum of amount_final for walk-in receipts
-        let netProfit = 0;
+        let motherB2BTotal = 0; // sum of mother_b2b_cost for all receipts
 
         filteredReceipts.forEach(r => {
             const amt = r.amount_final || parseFloat(r.display_amount.replace('₹', '').replace(/,/g, '')) || 0;
@@ -229,16 +229,18 @@ const ReceiptReport: React.FC = () => {
 
             amount += amt;
             mrp += mVal;
+            motherB2BTotal += motherB2B;
 
             if (r.acting_as_client_id) {
                 b2bSubmissions += bVal;
                 b2bPatientBillings += amt;
-                netProfit += (bVal - motherB2B);
             } else {
                 directRetail += amt;
-                netProfit += (amt - motherB2B);
             }
         });
+
+        const totalB2B = b2bSubmissions + directRetail;
+        const totalProfit = totalB2B - motherB2BTotal;
 
         return { 
             amount, 
@@ -246,16 +248,16 @@ const ReceiptReport: React.FC = () => {
             b2bSubmissions, 
             b2bPatientBillings, 
             directRetail, 
-            netProfit, 
+            motherB2BTotal,
+            totalB2B,
+            netProfit: totalProfit, 
             average: totalCount > 0 ? amount / totalCount : 0 
         };
     }, [filteredReceipts, totalCount]);
 
-    const totalAmount = metrics.amount;
-    const totalB2BSubmissions = metrics.b2bSubmissions;
-    const totalDirectRetail = metrics.directRetail;
+    const totalB2B = metrics.totalB2B;
+    const totalMotherB2B = metrics.motherB2BTotal;
     const totalProfit = metrics.netProfit;
-    const averageAmount = metrics.average;
 
     // Custom SVG Line Chart for revenue trend
     const renderLineChart = () => {
@@ -712,56 +714,60 @@ const ReceiptReport: React.FC = () => {
                             {/* Highlight Metrics Cards */}
                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
 
+                                {/* Card 1: Total Patients */}
                                 <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm flex justify-between items-center animate-fade-in">
                                     <div className="space-y-1.5 min-w-0">
-                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Receipts Count</span>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Total Patients</span>
                                         <div className="flex items-baseline gap-1">
                                             <span className="text-3xl font-bold text-slate-800">{totalCount}</span>
-                                            <span className="text-[9px] font-medium text-slate-400 uppercase">items</span>
+                                            <span className="text-[9px] font-medium text-slate-400 uppercase">patients</span>
                                         </div>
                                     </div>
                                     <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-base shrink-0">
-                                        <i className="fa-solid fa-receipt"></i>
+                                        <i className="fa-solid fa-users"></i>
                                     </div>
                                 </div>
 
+                                {/* Card 2: Total MRP */}
                                 <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm flex justify-between items-center animate-fade-in">
                                     <div className="space-y-1.5 min-w-0">
-                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Gross Patient Billings</span>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Total MRP</span>
                                         <div className="flex items-baseline">
-                                            <span className="text-2xl font-bold text-slate-850">₹{totalAmount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                            <span className="text-2xl font-bold text-slate-800">₹{metrics.mrp.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                                         </div>
-                                        <div className="text-[9px] font-medium text-slate-400 uppercase tracking-wider block truncate">Avg: ₹{averageAmount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
                                     </div>
                                     <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-base shrink-0">
-                                        <i className="fa-solid fa-file-invoice"></i>
+                                        <i className="fa-solid fa-file-invoice-dollar"></i>
                                     </div>
                                 </div>
 
+                                {/* Card 3: Total B2B */}
                                 <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm flex justify-between items-center animate-fade-in">
                                     <div className="space-y-1.5 min-w-0">
-                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Direct Retail Revenue</span>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Total B2B</span>
                                         <div className="flex items-baseline">
-                                            <span className="text-2xl font-bold text-slate-800">₹{totalDirectRetail.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                            <span className="text-2xl font-bold text-slate-800">₹{totalB2B.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                                         </div>
                                     </div>
                                     <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-base shrink-0">
-                                        <i className="fa-solid fa-cash-register"></i>
+                                        <i className="fa-solid fa-cart-shopping"></i>
                                     </div>
                                 </div>
 
+                                {/* Card 4: Total Lab Payment (Mother list) */}
                                 <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-sm flex justify-between items-center animate-fade-in">
                                     <div className="space-y-1.5 min-w-0">
-                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Company B2B Revenue</span>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block truncate">Total Lab Payment (Mother list)</span>
                                         <div className="flex items-baseline">
-                                            <span className="text-2xl font-bold text-slate-800">₹{totalB2BSubmissions.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                            <span className="text-2xl font-bold text-slate-800">₹{totalMotherB2B.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                                         </div>
                                     </div>
                                     <div className="w-10 h-10 rounded-2xl bg-purple-50 text-purple-600 flex items-center justify-center text-base shrink-0">
-                                        <i className="fa-solid fa-wallet"></i>
+                                        <i className="fa-solid fa-flask-vial"></i>
                                     </div>
                                 </div>
 
+                                {/* Card 5: Net Operational Profit */}
                                 <div className="bg-emerald-50/40 p-5 rounded-3xl border border-emerald-100 shadow-sm flex justify-between items-center animate-fade-in">
                                     <div className="space-y-1.5 min-w-0">
                                         <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider block truncate">Net Operational Profit</span>
