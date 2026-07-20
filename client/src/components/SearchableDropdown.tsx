@@ -36,10 +36,6 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
         useImperativeHandle(ref, () => ({
             focus: () => {
                 inputRef.current?.focus();
-                // Universal scroll-to-center on focus
-                setTimeout(() => {
-                    inputRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                }, 100);
             }
         }));
 
