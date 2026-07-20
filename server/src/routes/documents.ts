@@ -583,6 +583,18 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
     try {
         const clientId = user.id;
 
+        const userObj = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(clientId) as { wallet_balance: number };
+
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
+        const currentMonthStr = `${currentYear}-${currentMonth}`;
+
+        const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const lastMonthYear = lastMonthDate.getFullYear();
+        const lastMonthVal = String(lastMonthDate.getMonth() + 1).padStart(2, '0');
+        const lastMonthStr = `${lastMonthYear}-${lastMonthVal}`;
+
         // 1. Spends, Count, Savings and Franchisee Profit
         const stats = db.prepare(`
             SELECT 
@@ -595,6 +607,23 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
             WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
         `).get(clientId, clientId) as { total_orders: number; total_spend: number; total_savings: number; total_profit: number };
 
+        // 1b. Current Month and Last Month stats
+        const monthlyStats = db.prepare(`
+            SELECT 
+                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN r.total_mrp ELSE 0 END) as current_month_mrp,
+                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN COALESCE(t.amount_deducted, 0) ELSE 0 END) as current_month_b2b,
+                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN 1 ELSE 0 END) as current_month_patients,
+                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN COALESCE(t.amount_deducted, 0) ELSE 0 END) as last_month_b2b
+            FROM receipts r
+            LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
+            WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
+        `).get(currentMonthStr, currentMonthStr, currentMonthStr, lastMonthStr, clientId, clientId) as {
+            current_month_mrp: number;
+            current_month_b2b: number;
+            current_month_patients: number;
+            last_month_b2b: number;
+        };
+
         // 2. Volume Trend (Last 6 Months)
         const trend = db.prepare(`
             SELECT 
@@ -606,7 +635,6 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
             WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
             GROUP BY month
             ORDER BY month DESC
-            LIMIT 6
         `).all(clientId, clientId) as any[];
 
         // 3. Top 5 Ordered Tests
@@ -630,7 +658,11 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
                 total_spend: stats.total_spend || 0,
                 total_savings: stats.total_savings || 0,
                 total_profit: stats.total_profit || 0,
-                wallet_balance: user.wallet_balance || 0
+                wallet_balance: userObj?.wallet_balance || 0,
+                current_month_mrp: monthlyStats.current_month_mrp || 0,
+                current_month_b2b: monthlyStats.current_month_b2b || 0,
+                current_month_patients: monthlyStats.current_month_patients || 0,
+                last_month_b2b: monthlyStats.last_month_b2b || 0
             },
             trend: trend.reverse(), // Chronological order
             topTests
