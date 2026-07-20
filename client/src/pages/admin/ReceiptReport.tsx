@@ -43,7 +43,10 @@ const ReceiptReport: React.FC = () => {
     });
 
     const [activeTab, setActiveTab] = useState<'BI' | 'LEDGER'>('BI');
-    const [showAllClients, setShowAllClients] = useState(false);
+    const [showClientModal, setShowClientModal] = useState(false);
+    const [modalTimeframe, setModalTimeframe] = useState<number | 'lifetime'>('lifetime');
+    const [periodRanges, setPeriodRanges] = useState<(number | 'lifetime')[]>([3, 6, 12, 'lifetime']);
+    const [matrixMetric, setMatrixMetric] = useState<'B2B' | 'MRP'>('B2B');
     const [biMetrics, setBiMetrics] = useState<{ mostUsedTests: any[]; mostUsedLabs: any[] } | null>(null);
 
     useEffect(() => {
@@ -179,20 +182,118 @@ const ReceiptReport: React.FC = () => {
     }, [filteredReceipts]);
 
     const revenueByClient = useMemo(() => {
-        const groups: { [client: string]: number } = {};
+        const groups: {
+            [client: string]: {
+                mrp: number;
+                b2b: number;
+                patients: number;
+                amount: number;
+            }
+        } = {};
+
         filteredReceipts.forEach(r => {
             const client = r.created_by_user || 'Direct Entry';
             const amt = r.amount_final || parseFloat(r.display_amount.replace('₹', '').replace(/,/g, '')) || 0;
+            const mrp = r.total_mrp || amt;
+            const b2b = r.b2b_cost || 0;
 
-            // Clean up the client name string
             const cleanName = client.split(' [M.ENTRY')[0];
-            groups[cleanName] = (groups[cleanName] || 0) + amt;
+            if (!groups[cleanName]) {
+                groups[cleanName] = { mrp: 0, b2b: 0, patients: 0, amount: 0 };
+            }
+            groups[cleanName].mrp += mrp;
+            groups[cleanName].b2b += r.acting_as_client_id ? b2b : amt;
+            groups[cleanName].patients += 1;
+            groups[cleanName].amount += amt;
         });
-        const sorted = Object.entries(groups)
-            .map(([client, amount]) => ({ client, amount }))
-            .sort((a, b) => b.amount - a.amount);
-        return showAllClients ? sorted : sorted.slice(0, 5);
-    }, [filteredReceipts, showAllClients]);
+
+        return Object.entries(groups)
+            .map(([client, data]) => ({ client, ...data }))
+            .sort((a, b) => b.b2b - a.b2b);
+    }, [filteredReceipts]);
+
+    const monthlyBIStats = useMemo(() => {
+        const groups: {
+            [month: string]: {
+                b2b: number;
+                profit: number;
+                patients: number;
+                mrp: number;
+            }
+        } = {};
+
+        filteredReceipts.forEach(r => {
+            const parts = r.display_date.split(' ');
+            if (parts[0]) {
+                const [, month, year] = parts[0].split('/'); // DD/MM/YYYY
+                const monthKey = `${year}-${month}`; // YYYY-MM
+
+                const b2b = r.b2b_cost || 0;
+                const motherB2B = r.mother_b2b_cost || 0;
+                const amt = r.amount_final || parseFloat(r.display_amount.replace('₹', '').replace(/,/g, '')) || 0;
+                const mrp = r.total_mrp || amt;
+                const profit = r.acting_as_client_id ? (b2b - motherB2B) : (amt - motherB2B);
+
+                if (!groups[monthKey]) {
+                    groups[monthKey] = { b2b: 0, profit: 0, patients: 0, mrp: 0 };
+                }
+                groups[monthKey].b2b += r.acting_as_client_id ? b2b : amt;
+                groups[monthKey].mrp += mrp;
+                groups[monthKey].profit += profit;
+                groups[monthKey].patients += 1;
+            }
+        });
+
+        return Object.entries(groups)
+            .map(([month, data]) => ({ month, ...data }))
+            .sort((a, b) => a.month.localeCompare(b.month)); // Oldest first
+    }, [filteredReceipts]);
+
+    const modalClientStats = useMemo(() => {
+        let targetReceipts = filteredReceipts;
+        if (modalTimeframe !== 'lifetime') {
+            const now = new Date();
+            const cutoffDate = new Date(now.getFullYear(), now.getMonth() - modalTimeframe, 1);
+            cutoffDate.setHours(0, 0, 0, 0);
+
+            targetReceipts = filteredReceipts.filter(r => {
+                const parts = r.display_date.split(' ');
+                if (parts[0]) {
+                    const [day, month, year] = parts[0].split('/').map(Number);
+                    const rDate = new Date(year, month - 1, day);
+                    return rDate >= cutoffDate;
+                }
+                return false;
+            });
+        }
+
+        const groups: {
+            [client: string]: {
+                mrp: number;
+                b2b: number;
+                patients: number;
+            }
+        } = {};
+
+        targetReceipts.forEach(r => {
+            const client = r.created_by_user || 'Direct Entry';
+            const amt = r.amount_final || parseFloat(r.display_amount.replace('₹', '').replace(/,/g, '')) || 0;
+            const mrp = r.total_mrp || amt;
+            const b2b = r.b2b_cost || 0;
+
+            const cleanName = client.split(' [M.ENTRY')[0];
+            if (!groups[cleanName]) {
+                groups[cleanName] = { mrp: 0, b2b: 0, patients: 0 };
+            }
+            groups[cleanName].mrp += mrp;
+            groups[cleanName].b2b += r.acting_as_client_id ? b2b : amt;
+            groups[cleanName].patients += 1;
+        });
+
+        return Object.entries(groups)
+            .map(([client, data]) => ({ client, ...data }))
+            .sort((a, b) => b.b2b - a.b2b);
+    }, [filteredReceipts, modalTimeframe]);
 
     const ticketSizeBuckets = useMemo(() => {
         const buckets = {
@@ -436,17 +537,18 @@ const ReceiptReport: React.FC = () => {
             );
         }
 
-        const maxVal = Math.max(...revenueByClient.map(c => c.amount), 100);
+        const topClients = revenueByClient.slice(0, 5);
+        const maxVal = Math.max(...topClients.map(c => c.b2b), 100);
 
         return (
             <div className="space-y-3.5">
-                {revenueByClient.map((item, index) => {
-                    const pct = (item.amount / maxVal) * 100;
+                {topClients.map((item, index) => {
+                    const pct = (item.b2b / maxVal) * 100;
                     return (
                         <div key={index} className="space-y-1">
                             <div className="flex justify-between items-center text-xs font-bold">
                                 <span className="text-slate-700 truncate max-w-[180px]">{item.client}</span>
-                                <span className="text-indigo-600 font-black">₹{item.amount.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                                <span className="text-indigo-600 font-black">₹{item.b2b.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
                             </div>
                             <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
                                 <div
@@ -460,11 +562,124 @@ const ReceiptReport: React.FC = () => {
                 <div className="pt-2 text-center border-t border-slate-100 mt-2">
                     <button 
                         type="button" 
-                        onClick={() => setShowAllClients(!showAllClients)}
-                        className="text-[10px] font-black text-indigo-600 hover:text-indigo-800 transition-colors uppercase tracking-widest"
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setShowClientModal(true);
+                        }}
+                        className="text-[10px] font-black text-indigo-600 hover:text-indigo-855 transition-colors uppercase tracking-widest"
                     >
-                        {showAllClients ? 'Show Top 5 Only' : 'Show All Clients'}
+                        EXPAND MODAL
                     </button>
+                </div>
+            </div>
+        );
+    };
+
+    const getStatsForWindow = (monthsCount: number | 'lifetime', metric: 'B2B' | 'MRP' = 'B2B') => {
+        if (monthlyBIStats.length === 0) return { volume: 0, profit: 0, growth: 0, hasData: false };
+
+        const len = monthlyBIStats.length;
+        const currentPeriodMonths = monthsCount === 'lifetime' ? len : Math.min(monthsCount, len);
+        
+        const currentSlice = monthlyBIStats.slice(len - currentPeriodMonths);
+        const volume = currentSlice.reduce((sum, m) => sum + (metric === 'B2B' ? m.b2b : (m.mrp || 0)), 0);
+        const profit = currentSlice.reduce((sum, m) => sum + m.profit, 0);
+
+        let growth = 0;
+        let hasData = false;
+        if (len > 0) {
+            const currentMonthVal = metric === 'B2B' ? monthlyBIStats[len - 1].b2b : (monthlyBIStats[len - 1].mrp || 0);
+            let priorIdx = 0;
+            if (monthsCount !== 'lifetime') {
+                priorIdx = len - 1 - monthsCount;
+            }
+            if (priorIdx >= 0 && priorIdx < len) {
+                const priorVal = metric === 'B2B' ? monthlyBIStats[priorIdx].b2b : (monthlyBIStats[priorIdx].mrp || 0);
+                if (priorVal > 0) {
+                    growth = ((currentMonthVal - priorVal) / priorVal) * 100;
+                    hasData = true;
+                } else if (currentMonthVal > 0) {
+                    growth = 100;
+                    hasData = true;
+                }
+            } else if (monthsCount === 'lifetime' && len > 1) {
+                const priorVal = metric === 'B2B' ? monthlyBIStats[0].b2b : (monthlyBIStats[0].mrp || 0);
+                if (priorVal > 0) {
+                    growth = ((currentMonthVal - priorVal) / priorVal) * 100;
+                    hasData = true;
+                }
+            }
+        }
+
+        return { volume, profit, growth, hasData };
+    };
+
+    const renderLabUtilizationChart = () => {
+        if (!biMetrics || biMetrics.mostUsedLabs.length === 0) {
+            return (
+                <div className="flex flex-col items-center justify-center h-48 border border-dashed border-slate-200 rounded-2xl bg-slate-50/50 text-slate-400">
+                    <i className="fa-solid fa-house-chimney-medical text-2xl mb-2 opacity-55"></i>
+                    <p className="text-xs font-semibold uppercase tracking-wider italic">No laboratory data logged yet.</p>
+                </div>
+            );
+        }
+
+        const totalLabsCount = biMetrics.mostUsedLabs.reduce((sum, l) => sum + l.count, 0);
+        let accumulatedPercent = 0;
+        const colors = ['#6366f1', '#10b981', '#f59e0b', '#ec4899', '#3b82f6', '#8b5cf6', '#14b8a6'];
+
+        return (
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-6">
+                <div className="relative w-28 h-28 flex-shrink-0">
+                    <svg viewBox="0 0 36 36" className="w-full h-full transform -rotate-90">
+                        {/* Background ring */}
+                        <circle cx="18" cy="18" r="15.915" fill="none" stroke="#f1f5f9" strokeWidth="3" />
+
+                        {biMetrics.mostUsedLabs.map((lab, idx) => {
+                            const pct = (lab.count / totalLabsCount) * 100;
+                            if (pct === 0) return null;
+                            const strokeDasharray = `${pct} ${100 - pct}`;
+                            const strokeDashoffset = 100 - accumulatedPercent;
+                            accumulatedPercent += pct;
+
+                            return (
+                                <circle
+                                    key={idx}
+                                    cx="18"
+                                    cy="18"
+                                    r="15.915"
+                                    fill="none"
+                                    stroke={colors[idx % colors.length]}
+                                    strokeWidth="3.2"
+                                    strokeDasharray={strokeDasharray}
+                                    strokeDashoffset={strokeDashoffset}
+                                    className="transition-all duration-500 ease-in-out"
+                                />
+                            );
+                        })}
+                    </svg>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center">
+                        <span className="text-sm font-black text-slate-800">{totalLabsCount}</span>
+                        <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest leading-none">Total Labs</span>
+                    </div>
+                </div>
+                {/* Legend list */}
+                <div className="flex-1 space-y-1.5 w-full">
+                    {biMetrics.mostUsedLabs.map((lab, idx) => {
+                        const pct = totalLabsCount > 0 ? (lab.count / totalLabsCount) * 100 : 0;
+                        const cleanName = lab.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim();
+                        return (
+                            <div key={idx} className="flex items-center justify-between text-[11px] leading-tight">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: colors[idx % colors.length] }}></span>
+                                    <span className="font-bold text-slate-600 truncate">{cleanName}</span>
+                                </div>
+                                <span className="font-black text-slate-850 shrink-0 font-mono ml-2">
+                                    {lab.count} ({pct.toFixed(0)}%)
+                                </span>
+                            </div>
+                        );
+                    })}
                 </div>
             </div>
         );
@@ -804,11 +1019,20 @@ const ReceiptReport: React.FC = () => {
 
                                     {/* Bar Chart / Share Card */}
                                     <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
-                                        <div className="flex items-center gap-2">
-                                            <i className="fa-solid fa-ranking-star text-indigo-600 text-xs"></i>
-                                            <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Top client allocations</h4>
+                                        <div className="flex justify-between items-center">
+                                            <div className="flex items-center gap-2">
+                                                <i className="fa-solid fa-ranking-star text-indigo-600 text-xs"></i>
+                                                <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Top client allocations</h4>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowClientModal(true)}
+                                                className="text-[10px] font-black text-indigo-600 hover:text-indigo-800 transition-colors uppercase tracking-widest bg-slate-50 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-150"
+                                            >
+                                                Details
+                                            </button>
                                         </div>
-                                        <div className="pt-1">
+                                        <div className="pt-1 cursor-pointer" onClick={() => setShowClientModal(true)}>
                                             {renderClientChart()}
                                         </div>
                                     </div>
@@ -828,9 +1052,114 @@ const ReceiptReport: React.FC = () => {
 
                             </div>
 
-                            {/* Popular Tests & Labs Section */}
+                            {/* Multi-Period BI Performance Matrix */}
+                            <div className="bg-white p-6 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                                    <div className="flex items-center gap-2">
+                                        <i className="fa-solid fa-clock-rotate-left text-indigo-600 text-sm"></i>
+                                        <h4 className="text-sm font-black text-slate-800 uppercase tracking-wider">Multi-Period Performance Matrix</h4>
+                                    </div>
+                                    <div className="flex items-center gap-2 bg-slate-50 p-1 rounded-xl border border-slate-150">
+                                        <button
+                                            type="button"
+                                            onClick={() => setMatrixMetric('B2B')}
+                                            className={`px-3 py-1 text-xs font-black rounded-lg transition-all ${
+                                                matrixMetric === 'B2B'
+                                                    ? 'bg-white text-indigo-700 shadow-sm border border-slate-150'
+                                                    : 'text-slate-500 hover:text-slate-800'
+                                            }`}
+                                        >
+                                            B2B Revenue
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setMatrixMetric('MRP')}
+                                            className={`px-3 py-1 text-xs font-black rounded-lg transition-all ${
+                                                matrixMetric === 'MRP'
+                                                    ? 'bg-white text-indigo-700 shadow-sm border border-slate-150'
+                                                    : 'text-slate-500 hover:text-slate-800'
+                                            }`}
+                                        >
+                                            Gross MRP
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="overflow-x-auto rounded-2xl border border-slate-150">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead>
+                                            <tr className="bg-slate-50 border-b border-slate-150 text-[11px] font-black text-slate-400 uppercase tracking-widest">
+                                                <th className="p-4 pl-5">Timeframe</th>
+                                                <th className="p-4 text-right">Target Volume ({matrixMetric})</th>
+                                                <th className="p-4 text-right">Net Operational Profit</th>
+                                                <th className="p-4 text-right">Business Growth %</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-100 text-sm font-bold text-slate-700">
+                                            {periodRanges.map((months, idx) => {
+                                                const stats = getStatsForWindow(months, matrixMetric);
+                                                return (
+                                                    <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                        <td className="p-4 pl-5">
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-slate-800 font-extrabold">
+                                                                    {months === 'lifetime' ? 'Lifetime Cumulative' : 'Last'}
+                                                                </span>
+                                                                {months !== 'lifetime' && (
+                                                                    <CleanSelect
+                                                                        options={[
+                                                                            { value: 1, label: '1 Month' },
+                                                                            { value: 2, label: '2 Months' },
+                                                                            { value: 3, label: '3 Months' },
+                                                                            { value: 4, label: '4 Months' },
+                                                                            { value: 5, label: '5 Months' },
+                                                                            { value: 6, label: '6 Months' },
+                                                                            { value: 9, label: '9 Months' },
+                                                                            { value: 12, label: '12 Months' },
+                                                                            { value: 18, label: '18 Months' },
+                                                                            { value: 24, label: '24 Months' }
+                                                                        ]}
+                                                                        value={months}
+                                                                        onChange={(val) => {
+                                                                            const newRanges = [...periodRanges];
+                                                                            newRanges[idx] = (typeof val === 'number' ? val : parseInt(val, 10)) as number | 'lifetime';
+                                                                            setPeriodRanges(newRanges);
+                                                                        }}
+                                                                        className="w-32"
+                                                                    />
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                        <td className="p-4 text-right font-mono text-indigo-650 font-black text-base">
+                                                            ₹{stats.volume.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                                        </td>
+                                                        <td className="p-4 text-right font-mono text-emerald-600 font-black text-base">
+                                                            ₹{stats.profit.toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                                        </td>
+                                                        <td className="p-4 text-right font-mono">
+                                                            {stats.hasData ? (
+                                                                <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-black text-xs ${
+                                                                    stats.growth >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                                                                }`}>
+                                                                    <i className={`fa-solid text-[9px] ${stats.growth >= 0 ? 'fa-arrow-up' : 'fa-arrow-down'}`}></i>
+                                                                    {stats.growth.toFixed(0)}%
+                                                                </span>
+                                                            ) : (
+                                                                <span className="inline-flex items-center px-3 py-1 rounded-full font-black text-xs bg-slate-100 text-slate-400 uppercase">
+                                                                    Baseline
+                                                                </span>
+                                                            )}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            {/* Popular Tests & Labs Section - aligned to top to prevent stretch */}
                             {biMetrics && (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                                     {/* Popular Tests */}
                                     <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
                                         <div className="flex items-center gap-2">
@@ -860,111 +1189,195 @@ const ReceiptReport: React.FC = () => {
                                         </div>
                                     </div>
 
-                                    {/* Utilized Laboratories */}
+                                    {/* Utilized Laboratories - shifted to donut format */}
                                     <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
                                         <div className="flex items-center gap-2">
                                             <i className="fa-solid fa-house-chimney-medical text-indigo-600 text-xs"></i>
                                             <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">Laboratory Utilization Share</h4>
                                         </div>
-                                        <div className="pt-1 space-y-3">
-                                            {biMetrics.mostUsedLabs.length === 0 ? (
-                                                <p className="text-xs text-slate-450 italic">No laboratory data logged yet.</p>
-                                            ) : (
-                                                biMetrics.mostUsedLabs.map((lab, index) => {
-                                                    const maxCount = Math.max(...biMetrics.mostUsedLabs.map(l => l.count), 1);
-                                                    const pct = (lab.count / maxCount) * 100;
-                                                    return (
-                                                        <div key={index} className="space-y-1">
-                                                            <div className="flex justify-between items-center text-xs font-bold">
-                                                                <span className="text-slate-700 truncate max-w-[200px]">{lab.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount)?\)/i, '').trim()}</span>
-                                                                <span className="text-indigo-600 font-black">{lab.count} receipts</span>
-                                                            </div>
-                                                            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                                                                <div className="bg-gradient-to-r from-emerald-500 to-teal-500 h-full rounded-full" style={{ width: `${pct}%` }}></div>
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })
-                                            )}
+                                        <div className="pt-1">
+                                            {renderLabUtilizationChart()}
                                         </div>
                                     </div>
                                 </div>
                             )}
+                        </>
+                    )}
 
-                            {/* Detailed Data Table */}
-                            <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
-                                <div className="flex justify-between items-center">
+                    {/* Top Clients Detailed Modal */}
+                    {showClientModal && (
+                        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-3xl shadow-xl border border-slate-100 max-w-3xl w-full p-6 space-y-4 animate-fade-in-up">
+                                <div className="flex justify-between items-center border-b border-slate-100 pb-3">
                                     <div className="flex items-center gap-2">
-                                        <div className="w-1.5 h-4 bg-indigo-600 rounded-full"></div>
-                                        <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Audit Registry</h3>
+                                        <i className="fa-solid fa-ranking-star text-indigo-600 text-xs"></i>
+                                        <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest">Client Allocation Matrix</h3>
                                     </div>
-                                    <span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full uppercase tracking-wider">
-                                        {totalCount} records indexed
-                                    </span>
+                                    <button
+                                        onClick={() => setShowClientModal(false)}
+                                        className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                                    >
+                                        <i className="fa-solid fa-times"></i>
+                                    </button>
                                 </div>
 
-                                <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-inner">
-                                    <table className="w-full min-w-[1200px] text-left border-collapse">
-                                        <thead className="bg-slate-50/80 sticky top-0 backdrop-blur-md">
-                                            <tr className="border-b border-slate-100">
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest pl-4 w-28">Receipt ID</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest w-40">Date / Time</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Patient Name</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest w-40">Customer ID</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Operator / Context</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Selected Laboratory</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">B2C Gross</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">B2B Cost</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Mother Cost</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Profit Margin</th>
-                                                <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Final Payable</th>
+                                {/* Modal Filter / Timeframe fine tuning */}
+                                <div className="flex items-center justify-between bg-slate-50 p-3 rounded-2xl border border-slate-150">
+                                    <span className="text-xs font-black text-slate-500 uppercase tracking-wider">Configure Analysis Window</span>
+                                    <CleanSelect
+                                        options={[
+                                            { value: 'lifetime', label: 'Lifetime Cumulative' },
+                                            { value: 1, label: 'Last 1 Month' },
+                                            { value: 3, label: 'Last 3 Months' },
+                                            { value: 6, label: 'Last 6 Months' },
+                                            { value: 12, label: 'Last 12 Months' }
+                                        ]}
+                                        value={modalTimeframe}
+                                        onChange={(val) => setModalTimeframe(val)}
+                                        className="w-48 text-xs"
+                                    />
+                                </div>
+
+                                <div className="overflow-x-auto max-h-[350px] rounded-xl border border-slate-150">
+                                    <table className="w-full text-left border-collapse">
+                                        <thead className="bg-slate-50 sticky top-0">
+                                            <tr className="border-b border-slate-150 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                                <th className="p-3 pl-4">Client Name</th>
+                                                <th className="p-3 text-center">Patient Count</th>
+                                                <th className="p-3 text-right">Total MRP</th>
+                                                <th className="p-3 text-right">Total B2B</th>
+                                                <th className="p-3 text-center w-24">Action</th>
                                             </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-slate-100">
-                                            {filteredReceipts.length > 0 ? (
-                                                filteredReceipts.map((r) => {
-                                                    const motherCost = r.mother_b2b_cost || 0;
-                                                    const profit = r.acting_as_client_id ? ((r.b2b_cost || 0) - motherCost) : ((r.amount_final || 0) - motherCost);
-                                                    return (
-                                                        <tr key={r.id} className="hover:bg-slate-50/50 transition-colors text-xs font-semibold text-slate-600">
-                                                            <td className="p-3 pl-4 font-mono font-bold text-slate-800">{r.display_doc_id}</td>
-                                                            <td className="p-3">{r.display_date}</td>
-                                                            <td className="p-3 font-bold text-slate-800">{r.customer_name}</td>
-                                                            <td className="p-3 font-mono text-[10px]">{r.display_customer_id}</td>
-                                                            <td className="p-3 text-[11px]">
-                                                                <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">
-                                                                    {r.created_by_user}
-                                                                </span>
-                                                            </td>
-                                                            <td className="p-3 font-bold text-indigo-700">{r.lab_name}</td>
-                                                            <td className="p-3 text-right">₹{(r.total_mrp || 0).toFixed(0)}</td>
-                                                            <td className="p-3 text-right text-indigo-600 font-bold">₹{(r.b2b_cost || 0).toFixed(0)}</td>
-                                                            <td className="p-3 text-right text-slate-400">₹{motherCost.toFixed(0)}</td>
-                                                            <td className={`p-3 text-right font-black ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                                                                ₹{profit.toFixed(0)}
-                                                            </td>
-                                                            <td className="p-3 text-right font-bold text-slate-800">{r.display_amount}</td>
-                                                        </tr>
-                                                    );
-                                                })
+                                        <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-600">
+                                            {modalClientStats.length > 0 ? (
+                                                modalClientStats.map((item, idx) => (
+                                                    <tr key={idx} className="hover:bg-slate-50/50">
+                                                        <td className="p-3 pl-4 text-slate-800 font-bold">{item.client}</td>
+                                                        <td className="p-3 text-center">
+                                                            <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full font-black text-[9px]">
+                                                                {item.patients} patients
+                                                            </span>
+                                                        </td>
+                                                        <td className="p-3 text-right font-mono">₹{item.mrp.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                                                        <td className="p-3 text-right text-indigo-650 font-bold font-mono">₹{item.b2b.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</td>
+                                                        <td className="p-3 text-center">
+                                                            <button
+                                                                onClick={() => {
+                                                                    const matched = clients.find(cl => cl.username.toLowerCase().trim() === item.client.toLowerCase().trim());
+                                                                    if (matched) {
+                                                                        setSelectedClientId(matched.id.toString());
+                                                                    } else {
+                                                                        setSelectedClientId('');
+                                                                    }
+                                                                    setActiveTab('LEDGER');
+                                                                    setShowClientModal(false);
+                                                                }}
+                                                                className="text-[10px] font-black text-indigo-600 hover:text-indigo-800 uppercase tracking-widest bg-indigo-50 hover:bg-indigo-100 px-2 py-1 rounded border border-slate-150 transition-colors"
+                                                            >
+                                                                Ledger
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                ))
                                             ) : (
                                                 <tr>
-                                                    <td colSpan={11} className="p-8 text-center text-slate-400 italic">
-                                                        No receipts match the selected filters.
+                                                    <td colSpan={5} className="p-8 text-center text-slate-400 italic">
+                                                        No client activity logged within the selected timeframe.
                                                     </td>
+                                                </tr>
+                                            )}
+                                            {modalClientStats.length > 0 && (
+                                                <tr className="bg-slate-50/80 border-t border-slate-200 text-xs font-black text-slate-800 sticky bottom-0">
+                                                    <td className="p-3 pl-4">Total Aggregate</td>
+                                                    <td className="p-3 text-center">
+                                                        {modalClientStats.reduce((sum, c) => sum + c.patients, 0)} patients
+                                                    </td>
+                                                    <td className="p-3 text-right font-mono">
+                                                        ₹{modalClientStats.reduce((sum, c) => sum + c.mrp, 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className="p-3 text-right text-indigo-655 font-mono">
+                                                        ₹{modalClientStats.reduce((sum, c) => sum + c.b2b, 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}
+                                                    </td>
+                                                    <td className="p-3"></td>
                                                 </tr>
                                             )}
                                         </tbody>
                                     </table>
                                 </div>
                             </div>
-                        </>
+                        </div>
                     )}
                 </>
             ) : (
-                <div className="bg-white p-12 rounded-3xl border border-slate-200/80 shadow-md text-center text-slate-400">
-                    <i className="fa-solid fa-folder-open text-4xl mb-3 opacity-30"></i>
-                    <p className="text-sm font-semibold uppercase tracking-wider">This space is kept blank for future ledger enhancements</p>
+                /* Franchise Ledger Sub Page - Detailed Data Table / Audit Registry */
+                <div className="space-y-6">
+                    <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-md space-y-4">
+                        <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                            <div className="flex items-center gap-2">
+                                <div className="w-1.5 h-4 bg-indigo-600 rounded-full"></div>
+                                <h3 className="text-xs font-black text-slate-800 uppercase tracking-widest">Audit Registry & Statement Ledger</h3>
+                            </div>
+                            <span className="text-[10px] font-black bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full uppercase tracking-wider">
+                                {totalCount} records indexed
+                            </span>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-inner">
+                            <table className="w-full min-w-[1200px] text-left border-collapse">
+                                <thead className="bg-slate-50/80 sticky top-0 backdrop-blur-md">
+                                    <tr className="border-b border-slate-150">
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest pl-4 w-28">Receipt ID</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest w-40">Date / Time</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Patient Name</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest w-40">Customer ID</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Operator / Context</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Selected Laboratory</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">B2C Gross</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">B2B Cost</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Mother Cost</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Profit Margin</th>
+                                        <th className="p-3 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right w-24">Final Payable</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-600">
+                                    {filteredReceipts.length > 0 ? (
+                                        filteredReceipts.map((r) => {
+                                            const motherCost = r.mother_b2b_cost || 0;
+                                            const profit = r.acting_as_client_id ? ((r.b2b_cost || 0) - motherCost) : ((r.amount_final || 0) - motherCost);
+                                            return (
+                                                <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
+                                                    <td className="p-3 pl-4 font-mono font-bold text-slate-800">{r.display_doc_id}</td>
+                                                    <td className="p-3">{r.display_date}</td>
+                                                    <td className="p-3 font-bold text-slate-800">{r.customer_name}</td>
+                                                    <td className="p-3 font-mono text-[10px]">{r.display_customer_id}</td>
+                                                    <td className="p-3 text-[11px]">
+                                                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-bold">
+                                                            {r.created_by_user}
+                                                        </span>
+                                                    </td>
+                                                    <td className="p-3 font-bold text-indigo-700">{r.lab_name}</td>
+                                                    <td className="p-3 text-right font-mono">₹{(r.total_mrp || 0).toFixed(0)}</td>
+                                                    <td className="p-3 text-right text-indigo-600 font-bold font-mono">₹{(r.b2b_cost || 0).toFixed(0)}</td>
+                                                    <td className="p-3 text-right text-slate-400 font-mono">₹{motherCost.toFixed(0)}</td>
+                                                    <td className={`p-3 text-right font-black font-mono ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                        ₹{profit.toFixed(0)}
+                                                    </td>
+                                                    <td className="p-3 text-right font-bold text-slate-800 font-mono">{r.display_amount}</td>
+                                                </tr>
+                                            );
+                                        })
+                                    ) : (
+                                        <tr>
+                                            <td colSpan={11} className="p-8 text-center text-slate-400 italic">
+                                                No receipts match the selected filters.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             )}
 
