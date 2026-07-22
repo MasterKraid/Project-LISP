@@ -63,6 +63,12 @@ const ReceiptForm: React.FC = () => {
     });
     const [showPreview, setShowPreview] = useState(false);
 
+    useEffect(() => {
+        if (showPreview) {
+            window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        }
+    }, [showPreview]);
+
     // Mobile specific states
     const [step, setStep] = useState(1);
     const [isMobileView, setIsMobileView] = useState(window.innerWidth < 768);

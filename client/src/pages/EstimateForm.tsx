@@ -41,6 +41,12 @@ const EstimateForm: React.FC = () => {
     });
     const [showPreview, setShowPreview] = useState(false);
 
+    useEffect(() => {
+        if (showPreview) {
+            window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+        }
+    }, [showPreview]);
+
     // Fetch initial data
     useEffect(() => {
         apiService.getComparisonData().then(setComparisonData).catch(err => {
