@@ -461,10 +461,12 @@ router.get('/data-entry/receipts', isAuthenticated, (req, res) => {
         let query = `
             SELECT r.id, r.customer_id, r.branch_id, r.created_at, r.referred_by, r.notes, r.num_tests, r.total_mrp, r.created_by_user_id, r.acting_as_client_id, r.data_entry_done,
                    c.prefix, c.name as customer_name, c.mobile, c.email, c.dob, c.age_years, c.age_months, c.age_days, c.gender,
-                   u.alias as created_by_user
+                   u.alias as user_alias, u.username as username,
+                   cl.alias as client_alias, cl.username as client_username
             FROM receipts r
             JOIN customers c ON c.id = r.customer_id
             JOIN users u ON u.id = r.created_by_user_id
+            LEFT JOIN users cl ON r.acting_as_client_id = cl.id
         `;
         const params: any[] = [];
         if (dateFilter) {
@@ -533,6 +535,12 @@ router.get('/data-entry/receipts', isAuthenticated, (req, res) => {
                 `).get(r.id) as { lab_id: number; lab_name: string } | undefined;
             }
 
+            let creator = r.user_alias || r.username;
+            if (r.acting_as_client_id) {
+                const clientName = r.client_alias || r.client_username;
+                creator = `${clientName} [M.ENTRY BY - ${creator}]`;
+            }
+
             return {
                 ...r,
                 display_doc_id,
@@ -540,7 +548,8 @@ router.get('/data-entry/receipts', isAuthenticated, (req, res) => {
                 display_customer_id,
                 items,
                 lab_id: labInfo?.lab_id || null,
-                lab_name: labInfo?.lab_name || 'N/A'
+                lab_name: labInfo?.lab_name || 'N/A',
+                created_by_user: creator
             };
         });
         res.json(enriched);

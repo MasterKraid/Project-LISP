@@ -15,6 +15,12 @@ const ManageReports: React.FC = () => {
     const [alarms, setAlarms] = useState<{ warningCount: number; alarmCount: number; criticalList: any[] } | null>(null);
     const [dismissedAlarms, setDismissedAlarms] = useState(() => sessionStorage.getItem('dismissedPendingAlarm') === 'true');
 
+    const [hoveredTooltip, setHoveredTooltip] = useState<{
+        rect: DOMRect;
+        clientName: string;
+        uid: string | number;
+    } | null>(null);
+
     useEffect(() => {
         apiService.getPendingReportAlarms().then(data => {
             setAlarms(data);
@@ -591,16 +597,22 @@ const ManageReports: React.FC = () => {
                                                                 <td className={`p-3 pl-4 transition-all ${
                                                                     isSelected ? 'border-l-4 border-l-indigo-650 bg-indigo-50/20' : ''
                                                                 }`}>
-                                                                    <div className="relative group cursor-help inline-block">
-                                                                        <span className="font-bold text-slate-800 hover:text-indigo-650 transition-colors flex items-center gap-1.5">
+                                                                    <div className="inline-block">
+                                                                        <span 
+                                                                            className="font-bold text-slate-800 hover:text-indigo-650 transition-colors flex items-center gap-1.5 cursor-help"
+                                                                            onMouseEnter={(e) => {
+                                                                                const rect = e.currentTarget.getBoundingClientRect();
+                                                                                setHoveredTooltip({
+                                                                                    rect,
+                                                                                    clientName: rcpt.created_by_user || 'Direct Billing',
+                                                                                    uid: rcpt.acting_as_client_id || rcpt.created_by_user_id || 'N/A'
+                                                                                });
+                                                                            }}
+                                                                            onMouseLeave={() => setHoveredTooltip(null)}
+                                                                        >
                                                                             {isSelected && <span className="text-indigo-600 font-black animate-pulse">&gt;</span>}
                                                                             {rcpt.customer_name}
                                                                         </span>
-                                                                        
-                                                                        {/* Compact Upward Tooltip showing Client Name & UID */}
-                                                                        <div className="absolute left-0 bottom-full mb-1 bg-slate-950/95 text-white rounded-lg px-2.5 py-1 text-[10px] font-bold shadow-md opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 z-[9999] whitespace-nowrap">
-                                                                            {rcpt.created_by_user} [UID: {rcpt.acting_as_client_id || rcpt.created_by_user_id || 'N/A'}]
-                                                                        </div>
                                                                     </div>
                                                                     <div className="text-[9px] text-slate-400 font-mono">{rcpt.display_customer_id}</div>
                                                                 </td>
@@ -745,6 +757,27 @@ const ManageReports: React.FC = () => {
                     </div>
                 </div>
             </div>
+
+            {/* Fixed Position Tooltip Portal (Above Everything) */}
+            {hoveredTooltip && (
+                <div
+                    style={{
+                        top: `${hoveredTooltip.rect.top - 18}px`,
+                        left: `${hoveredTooltip.rect.left}px`,
+                        transform: 'translateY(-100%)'
+                    }}
+                    className="fixed z-[999999] pointer-events-none bg-slate-950/95 backdrop-blur-md text-white rounded-2xl p-3 px-3.5 shadow-2xl border-2 border-slate-700 whitespace-nowrap animate-in fade-in zoom-in-95 duration-100"
+                >
+                    <div className="text-[12px] font-bold text-white flex items-center gap-1.5 tracking-wide">
+                        <i className="fa-solid fa-user-tie text-indigo-400 text-[10px]"></i>
+                        <span>{hoveredTooltip.clientName}</span>
+                    </div>
+                    <div className="text-[10px] font-semibold text-indigo-300 font-mono mt-1 pt-1 border-t border-slate-800 flex items-center gap-1.5">
+                        <span className="text-slate-400 text-[9px] uppercase font-sans tracking-wider font-extrabold">Client UID:</span>
+                        <span className="text-emerald-400 font-black">{hoveredTooltip.uid}</span>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

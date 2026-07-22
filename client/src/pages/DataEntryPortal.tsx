@@ -161,6 +161,12 @@ const DataEntryPortal: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [selectedReceipt, setSelectedReceipt] = useState<DataEntryReceipt | null>(null);
 
+  const [hoveredTooltip, setHoveredTooltip] = useState<{
+    rect: DOMRect;
+    clientName: string;
+    uid: string | number;
+  } | null>(null);
+
   const [labs, setLabs] = useState<any[]>([]);
   const [selectedLabId, setSelectedLabId] = useState<string>('');
 
@@ -362,10 +368,23 @@ const DataEntryPortal: React.FC = () => {
                     className="hover:bg-indigo-50/20 cursor-pointer transition-colors group"
                   >
                     <td className="p-4 pl-6">
-                      <span className="font-bold text-slate-800 group-hover:text-indigo-650 transition-colors text-sm">
-                        {rcpt.prefix ? `${rcpt.prefix} ` : ''}
-                        {rcpt.customer_name}
-                      </span>
+                      <div className="inline-block">
+                        <span 
+                          className="font-bold text-slate-800 hover:text-indigo-650 transition-colors text-sm cursor-help"
+                          onMouseEnter={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            setHoveredTooltip({
+                              rect,
+                              clientName: rcpt.created_by_user || 'Direct Billing',
+                              uid: rcpt.acting_as_client_id || rcpt.created_by_user_id || 'N/A'
+                            });
+                          }}
+                          onMouseLeave={() => setHoveredTooltip(null)}
+                        >
+                          {rcpt.prefix ? `${rcpt.prefix} ` : ''}
+                          {rcpt.customer_name}
+                        </span>
+                      </div>
                       <div className="text-[10px] text-slate-400 font-medium">
                         {rcpt.gender} • {rcpt.age_years || 0}Y {rcpt.age_months || 0}M{' '}
                         {rcpt.age_days || 0}D
@@ -541,6 +560,27 @@ const DataEntryPortal: React.FC = () => {
                 )
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Fixed Position Tooltip Portal (Above Everything) */}
+      {hoveredTooltip && (
+        <div
+          style={{
+            top: `${hoveredTooltip.rect.top - 18}px`,
+            left: `${hoveredTooltip.rect.left}px`,
+            transform: 'translateY(-100%)'
+          }}
+          className="fixed z-[999999] pointer-events-none bg-slate-950/95 backdrop-blur-md text-white rounded-2xl p-3 px-3.5 shadow-2xl border-2 border-slate-700 whitespace-nowrap animate-in fade-in zoom-in-95 duration-100"
+        >
+          <div className="text-[12px] font-bold text-white flex items-center gap-1.5 tracking-wide">
+            <i className="fa-solid fa-user-tie text-indigo-400 text-[10px]"></i>
+            <span>{hoveredTooltip.clientName}</span>
+          </div>
+          <div className="text-[10px] font-semibold text-indigo-300 font-mono mt-1 pt-1 border-t border-slate-800 flex items-center gap-1.5">
+            <span className="text-slate-400 text-[9px] uppercase font-sans tracking-wider font-extrabold">Client UID:</span>
+            <span className="text-emerald-400 font-black">{hoveredTooltip.uid}</span>
           </div>
         </div>
       )}
