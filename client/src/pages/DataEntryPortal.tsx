@@ -568,7 +568,7 @@ const DataEntryPortal: React.FC = () => {
       {hoveredTooltip && (
         <div
           style={{
-            top: `${hoveredTooltip.rect.top - 18}px`,
+            top: `${hoveredTooltip.rect.top - 25}px`,
             left: `${hoveredTooltip.rect.left}px`,
             transform: 'translateY(-100%)'
           }}
