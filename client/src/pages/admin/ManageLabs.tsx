@@ -3,7 +3,8 @@ import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
 import { Lab, PackageList, Package, User, MasterPackage } from '../../types';
 import SearchableDropdown from '../../components/SearchableDropdown';
-import { RatelistLinkedClientsTooltip, RatelistMarkupTagTooltip } from '../../components/RatelistTooltips';
+import { RatelistLinkedClientsTooltip, RatelistMarkupTagTooltip, PriceAlertTooltip } from '../../components/RatelistTooltips';
+import ExcelImportModal from '../../components/ExcelImportModal';
 
 declare var ExcelJS: any;
 
@@ -18,13 +19,12 @@ const ManageLabs: React.FC = () => {
     const [isMasterOpen, setIsMasterOpen] = useState(false);
     const [masterSearch, setMasterSearch] = useState('');
     const [newMasterName, setNewMasterName] = useState('');
-    const [newMasterCode, setNewMasterCode] = useState('');
     const [aliasModalPkg, setAliasModalPkg] = useState<MasterPackage | null>(null);
     const [newAliasName, setNewAliasName] = useState('');
 
-    // Excel Upload Mode Modal
-    const [pendingExcelUpload, setPendingExcelUpload] = useState<{ listId: number; json: any[]; filename: string } | null>(null);
-    const [excelUploadMode, setExcelUploadMode] = useState<'OVERWRITE' | 'APPEND'>('OVERWRITE');
+    // Global Excel Upload Modals
+    const [excelImportTargetList, setExcelImportTargetList] = useState<PackageList | null>(null);
+    const [isMasterExcelModalOpen, setIsMasterExcelModalOpen] = useState(false);
 
     const parseMarkupDiscount = (name: string) => {
         let match = name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i);
@@ -180,7 +180,8 @@ const ManageLabs: React.FC = () => {
 
     const handleListToggle = (listId: number) => {
         const list = allLists.find(l => l.id === listId);
-        if (list && list.name.endsWith(' Mother Ratelist') && syncingLab && list.name === `${syncingLab.name} Mother Ratelist`) {
+        const isClone = list ? (/\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name)) : false;
+        if (list && !isClone && list.name.endsWith(' Mother Ratelist') && syncingLab && list.name === `${syncingLab.name} Mother Ratelist`) {
             return;
         }
         setAssignedLists(prev => {
@@ -281,7 +282,6 @@ const ManageLabs: React.FC = () => {
         if (!q) return masterPackages;
         return masterPackages.filter(p =>
             p.name.toLowerCase().includes(q) ||
-            (p.code_name && p.code_name.toLowerCase().includes(q)) ||
             (p.aliases && p.aliases.toLowerCase().includes(q))
         );
     }, [masterPackages, masterSearch]);
@@ -290,9 +290,8 @@ const ManageLabs: React.FC = () => {
         e.preventDefault();
         if (!newMasterName.trim()) return;
         try {
-            await apiService.createMasterPackage(newMasterName.trim(), newMasterCode.trim() || undefined);
+            await apiService.createMasterPackage(newMasterName.trim());
             setNewMasterName('');
-            setNewMasterCode('');
             fetchData();
         } catch (err: any) {
             alert("Failed to add master package: " + (err.message || err));
@@ -340,83 +339,41 @@ const ManageLabs: React.FC = () => {
     };
 
     // ----------------------------------------------------
-    // XLSX Upload Handler
+    // Excel Import Handlers (via Global ExcelImportModal)
     // ----------------------------------------------------
-    const handleFileUpload = (listId: number, e: React.ChangeEvent<HTMLInputElement>) => {
-        if (typeof ExcelJS === 'undefined') {
-            alert('Excel library could not be loaded. Please check your network connection and refresh.');
-            return;
+    const handleMasterExcelImport = async (parsedData: any[], mode: 'OVERWRITE' | 'APPEND') => {
+        try {
+            setIsLoading(true);
+            const res = await apiService.bulkUploadMasterPackages(parsedData, mode);
+            alert(res.message);
+            fetchData();
+        } catch (err: any) {
+            alert("Master Ratelist Import failed: " + (err.message || err));
+            throw err;
+        } finally {
+            setIsLoading(false);
         }
-
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        const filename = file.name;
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            try {
-                const buffer = event.target?.result as ArrayBuffer;
-                const workbook = new ExcelJS.Workbook();
-                await workbook.xlsx.load(buffer);
-
-                const worksheet = workbook.worksheets[0];
-                if (!worksheet) {
-                    throw new Error("No worksheets found in the Excel file.");
-                }
-
-                const json: any[] = [];
-                const headerRow = worksheet.getRow(1);
-                const headers = headerRow.values as string[];
-                headers.shift(); // Remove ExcelJS empty prefix index
-
-                worksheet.eachRow({ includeEmpty: false }, (row: any, rowNumber: number) => {
-                    if (rowNumber > 1) {
-                        let rowData: any = {};
-                        row.values.forEach((value: any, index: number) => {
-                            if (index > 0 && headers[index - 1]) {
-                                rowData[headers[index - 1]] = value;
-                            }
-                        });
-                        json.push(rowData);
-                    }
-                });
-
-                const requiredHeaders = ['code_name', 'name', 'mrp', 'b2b_price'];
-                if (headers.length < 4 || !requiredHeaders.every(h => headers.includes(h))) {
-                    throw new Error(`Invalid Excel format. Header row must contain required columns: code_name, name, mrp, b2b_price.`);
-                }
-
-                // Prompt user with modal for Overwrite vs Append
-                setPendingExcelUpload({ listId, json, filename });
-                setExcelUploadMode('OVERWRITE');
-            } catch (error) {
-                alert(`Error reading Excel file: ${error}`);
-            } finally {
-                e.target.value = '';
-            }
-        };
-        reader.readAsArrayBuffer(file);
     };
 
-    const handleConfirmExcelUpload = async () => {
-        if (!pendingExcelUpload) return;
+    const handleRatelistExcelImport = async (parsedData: any[], mode: 'OVERWRITE' | 'APPEND') => {
+        if (!excelImportTargetList) return;
         try {
             setIsLoading(true);
             const { inserted, updated } = await apiService.uploadPackages(
-                pendingExcelUpload.listId,
-                pendingExcelUpload.json,
-                excelUploadMode
+                excelImportTargetList.id,
+                parsedData,
+                mode
             );
-            alert(`Import complete (${excelUploadMode === 'OVERWRITE' ? 'Overwrite' : 'Append'})! ${inserted} packages added, ${updated} packages updated.`);
-            setPendingExcelUpload(null);
+            alert(`Import complete (${mode === 'OVERWRITE' ? 'Overwrite' : 'Append'})! ${inserted} packages added, ${updated} packages updated.`);
             fetchData();
-            if (isInventoryOpen && editingList?.id === pendingExcelUpload.listId) {
-                const pkgs = await apiService.getPackagesForList(pendingExcelUpload.listId);
+            if (isInventoryOpen && editingList?.id === excelImportTargetList.id) {
+                const pkgs = await apiService.getPackagesForList(excelImportTargetList.id);
                 setPackages(pkgs);
                 setOriginalPackages(JSON.parse(JSON.stringify(pkgs)));
             }
-        } catch (error: any) {
-            alert(`Error importing Excel file: ${error.message || error}`);
+        } catch (err: any) {
+            alert("Ratelist Import failed: " + (err.message || err));
+            throw err;
         } finally {
             setIsLoading(false);
         }
@@ -500,9 +457,9 @@ const ManageLabs: React.FC = () => {
             const orig = originalPackages.find(o => o.id === pkg.id);
             if (!orig) return true;
             return pkg.name !== orig.name ||
-                   pkg.mrp !== orig.mrp ||
-                   pkg.b2b_price !== orig.b2b_price ||
-                   (pkg.code_name || '') !== (orig.code_name || '');
+                pkg.mrp !== orig.mrp ||
+                pkg.b2b_price !== orig.b2b_price ||
+                (pkg.code_name || '') !== (orig.code_name || '');
         });
     }, [packages, originalPackages]);
 
@@ -512,9 +469,9 @@ const ManageLabs: React.FC = () => {
                 const orig = originalPackages.find(o => o.id === pkg.id);
                 if (!orig) return false;
                 return pkg.name !== orig.name ||
-                       pkg.mrp !== orig.mrp ||
-                       pkg.b2b_price !== orig.b2b_price ||
-                       (pkg.code_name || '') !== (orig.code_name || '');
+                    pkg.mrp !== orig.mrp ||
+                    pkg.b2b_price !== orig.b2b_price ||
+                    (pkg.code_name || '') !== (orig.code_name || '');
             });
 
             if (modified.length === 0) return;
@@ -536,7 +493,7 @@ const ManageLabs: React.FC = () => {
     // ----------------------------------------------------
     const openCloneModal = (list: PackageList, parentLab: Lab) => {
         setCloneTargetList(list);
-        
+
         // Auto select that lab's mother ratelist
         const motherList = allLists.find(l => l.name === `${parentLab.name} Mother Ratelist`);
         if (motherList) {
@@ -544,7 +501,7 @@ const ManageLabs: React.FC = () => {
         } else {
             setCloneSourceListId('');
         }
-        
+
         setCloneDiscount('0');
         setCloneMarkup('0');
         setIsCloneOpen(true);
@@ -560,12 +517,12 @@ const ManageLabs: React.FC = () => {
             const mark = parseFloat(cloneMarkup) || 0;
 
             const res = await apiService.clonePackageList(cloneTargetList.id, sourceId, disc, mark);
-            
+
             // Auto rename target list name to store markup/discount and source list name
             const sourceList = allLists.find(l => l.id === sourceId);
             const sourceName = sourceList ? sourceList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() : 'Mother Database';
             const cleanTargetName = cloneTargetList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim();
-            
+
             let finalTargetName = cleanTargetName;
             if (mark > 0) {
                 finalTargetName = `${cleanTargetName} (+${mark}% Markup from ${sourceName})`;
@@ -574,7 +531,7 @@ const ManageLabs: React.FC = () => {
             } else {
                 finalTargetName = `${cleanTargetName} (0% Markup from ${sourceName})`;
             }
-            
+
             try {
                 await apiService.updatePackageListName(cloneTargetList.id, finalTargetName);
             } catch (renameErr) {
@@ -593,7 +550,7 @@ const ManageLabs: React.FC = () => {
     return (
         <div className="p-3 sm:p-6 max-w-7xl mx-auto space-y-6">
             <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-gray-200">
-                <PageHeader title="Labs & Database Overhaul" showActingAs={false} />
+                <PageHeader title="Manage Labs" showActingAs={false} />
 
                 {/* Master Ratelist & Canonical Directory Expandable Section */}
                 <fieldset className="border-2 border-indigo-200 bg-indigo-50/20 p-4 md:p-6 rounded-xl mb-8 transition-all">
@@ -603,7 +560,7 @@ const ManageLabs: React.FC = () => {
                                 <i className="fa-solid fa-book-medical text-xs"></i>
                             </div>
                             <span className="text-base md:text-lg font-bold text-indigo-950 uppercase tracking-tight md:tracking-normal">
-                                Master Ratelist & Canonical Directory
+                                Master Ratelist
                             </span>
                             <span className="px-2 py-0.5 rounded-full text-xs font-black bg-indigo-100 text-indigo-800 border border-indigo-200">
                                 {masterPackages.length} Master Tests
@@ -623,36 +580,37 @@ const ManageLabs: React.FC = () => {
                                 The Master Ratelist defines the universal set of diagnostic tests. All Mother Ratelists shadow-pull from here. Mother Ratelists missing tests will display a Red Outline with capped tooltip.
                             </p>
 
-                            {/* Add Master Test Form */}
-                            <form onSubmit={handleAddMasterPackage} className="flex flex-col sm:flex-row items-end gap-3 bg-white p-3.5 rounded-lg border border-indigo-100 shadow-sm">
-                                <div className="w-full sm:w-48 space-y-1">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase">Test Code (Optional)</label>
-                                    <input
-                                        type="text"
-                                        value={newMasterCode}
-                                        onChange={e => setNewMasterCode(e.target.value)}
-                                        placeholder="e.g. CBC, LFT"
-                                        className="w-full p-2 border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-indigo-100"
-                                    />
-                                </div>
-                                <div className="flex-1 w-full space-y-1">
-                                    <label className="text-[10px] font-bold text-gray-400 uppercase">Canonical Test Name</label>
-                                    <input
-                                        type="text"
-                                        value={newMasterName}
-                                        onChange={e => setNewMasterName(e.target.value)}
-                                        placeholder="e.g. COMPLETE BLOOD COUNT (CBC)"
-                                        required
-                                        className="w-full p-2 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-100"
-                                    />
-                                </div>
+                            {/* Add Master Test Form & Upload Action */}
+                            <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-3 bg-white p-3.5 rounded-lg border border-indigo-100 shadow-sm">
+                                <form onSubmit={handleAddMasterPackage} className="flex-1 flex flex-col sm:flex-row items-end gap-3">
+                                    <div className="flex-1 w-full space-y-1">
+                                        <label className="text-[10px] font-bold text-gray-400 uppercase">Canonical Test Name</label>
+                                        <input
+                                            type="text"
+                                            value={newMasterName}
+                                            onChange={e => setNewMasterName(e.target.value)}
+                                            placeholder="e.g. COMPLETE BLOOD COUNT (CBC)"
+                                            required
+                                            className="w-full p-2 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-100"
+                                        />
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        className="w-full sm:w-auto px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs shadow-sm flex items-center justify-center gap-1.5 h-[36px] whitespace-nowrap"
+                                    >
+                                        <i className="fa-solid fa-plus-circle"></i> Add Master Test
+                                    </button>
+                                </form>
+
                                 <button
-                                    type="submit"
-                                    className="w-full sm:w-auto px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs shadow-sm flex items-center justify-center gap-1.5 h-[36px]"
+                                    type="button"
+                                    onClick={() => setIsMasterExcelModalOpen(true)}
+                                    className="w-full sm:w-auto px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs shadow-sm flex items-center justify-center gap-1.5 h-[36px] whitespace-nowrap"
+                                    title="Upload Excel spreadsheet with test_name, alias1, alias2..."
                                 >
-                                    <i className="fa-solid fa-plus-circle"></i> Add Master Test
+                                    <i className="fa-solid fa-file-excel"></i> Upload Master Excel (.xlsx)
                                 </button>
-                            </form>
+                            </div>
 
                             {/* Master Tests Search & Grid */}
                             <div className="bg-white p-4 rounded-xl border border-indigo-100 shadow-sm space-y-3">
@@ -677,11 +635,6 @@ const ManageLabs: React.FC = () => {
                                         <div key={mp.id} className="p-2.5 flex items-center justify-between gap-3 hover:bg-indigo-50/30 transition-colors">
                                             <div className="min-w-0 flex-1">
                                                 <div className="flex items-center gap-2">
-                                                    {mp.code_name && (
-                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-100 text-indigo-700 border border-indigo-200">
-                                                            {mp.code_name}
-                                                        </span>
-                                                    )}
                                                     <span className="text-xs font-bold text-gray-800 truncate">{mp.name}</span>
                                                 </div>
                                                 {mp.aliases && (
@@ -777,8 +730,8 @@ const ManageLabs: React.FC = () => {
                                     const labLists = allLists.filter(l => lab.assigned_list_ids?.includes(l.id));
 
                                     return (
-                                        <div 
-                                            key={lab.id} 
+                                        <div
+                                            key={lab.id}
                                             id={`lab-accordion-${lab.id}`}
                                             className={`border border-gray-200 rounded-xl shadow-sm hover:border-gray-350 transition-all bg-white ${isExpanded ? 'overflow-visible' : 'overflow-hidden'}`}
                                         >
@@ -864,41 +817,44 @@ const ManageLabs: React.FC = () => {
                                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                                 {(() => {
                                                                     const sortedLists = [...labLists].sort((a, b) => {
-                                                                        const aIsMother = a.name.endsWith(' Mother Ratelist') && a.name === `${lab.name} Mother Ratelist`;
-                                                                        const bIsMother = b.name.endsWith(' Mother Ratelist') && b.name === `${lab.name} Mother Ratelist`;
+                                                                        const aIsClone = /\(.*?\bfrom\b.*?\)/i.test(a.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(a.name);
+                                                                        const bIsClone = /\(.*?\bfrom\b.*?\)/i.test(b.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(b.name);
+                                                                        const aIsMother = !aIsClone && (a.name === `${lab.name} Mother Ratelist` || a.name.endsWith(' Mother Ratelist') || !!a.is_mother_ratelist);
+                                                                        const bIsMother = !bIsClone && (b.name === `${lab.name} Mother Ratelist` || b.name.endsWith(' Mother Ratelist') || !!b.is_mother_ratelist);
                                                                         if (aIsMother && !bIsMother) return -1;
                                                                         if (!aIsMother && bIsMother) return 1;
                                                                         return 0;
                                                                     });
                                                                     return sortedLists.map(list => {
-                                                                         const isMotherRatelist = list.is_mother_ratelist || (list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`);
-                                                                         const parsedInfo = parseMarkupDiscount(list.name);
-                                                                         const cleanName = getCleanName(list.name);
-                                                                         const hasRedOutline = !!list.has_red_outline;
-                                                                         const hasYellowOutline = !!list.has_yellow_outline;
+                                                                        const isClone = /\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name);
+                                                                        const isMotherRatelist = !isClone && (list.name === `${lab.name} Mother Ratelist` || list.name.endsWith(' Mother Ratelist') || !!list.is_mother_ratelist);
+                                                                        const parsedInfo = parseMarkupDiscount(list.name);
+                                                                        const cleanName = getCleanName(list.name);
+                                                                        const hasRedOutline = !!list.has_red_outline;
+                                                                        const hasYellowOutline = !!list.has_yellow_outline;
 
-                                                                         let borderClass = 'bg-white border-gray-200 shadow-sm';
-                                                                         if (hasRedOutline && hasYellowOutline) {
-                                                                             borderClass = 'bg-red-50/15 border-2 border-red-500 ring-2 ring-yellow-400 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
-                                                                         } else if (hasRedOutline) {
-                                                                             borderClass = 'bg-red-50/20 border-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
-                                                                         } else if (hasYellowOutline) {
-                                                                             borderClass = 'bg-yellow-50/30 border-2 border-yellow-400 ring-2 ring-yellow-400/50 shadow-[0_0_15px_rgba(234,179,8,0.25)]';
-                                                                         } else if (isMotherRatelist) {
-                                                                             borderClass = 'bg-blue-50/50 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.22)]';
-                                                                         }
+                                                                        let borderClass = 'bg-white border-gray-200 shadow-sm';
+                                                                        if (hasRedOutline && hasYellowOutline) {
+                                                                            borderClass = 'bg-red-50/15 border-2 border-red-500 ring-2 ring-yellow-400 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
+                                                                        } else if (hasRedOutline) {
+                                                                            borderClass = 'bg-red-50/20 border-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
+                                                                        } else if (hasYellowOutline) {
+                                                                            borderClass = 'bg-yellow-50/30 border-2 border-yellow-400 ring-2 ring-yellow-400/50 shadow-[0_0_15px_rgba(234,179,8,0.25)]';
+                                                                        } else if (isMotherRatelist) {
+                                                                            borderClass = 'bg-blue-50/50 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.22)]';
+                                                                        }
 
                                                                         return (
-                                                                            <div 
-                                                                                key={list.id} 
+                                                                            <div
+                                                                                key={list.id}
                                                                                 className={`p-4 rounded-xl border flex flex-col justify-between transition-all duration-200 relative ${borderClass}`}
                                                                             >
                                                                                 <div>
                                                                                     <div className="flex justify-between items-start">
                                                                                         {renamingListId === list.id ? (
                                                                                             <div className="flex items-center gap-1.5">
-                                                                                                <input 
-                                                                                                    type="text" 
+                                                                                                <input
+                                                                                                    type="text"
                                                                                                     value={renamingListName}
                                                                                                     onChange={e => setRenamingListName(e.target.value)}
                                                                                                     className="p-1 border border-indigo-300 rounded text-xs font-bold w-40 outline-none focus:ring-2 focus:ring-indigo-150"
@@ -912,21 +868,29 @@ const ManageLabs: React.FC = () => {
                                                                                                 <button onClick={() => setRenamingListId(null)} className="text-red-600 hover:text-red-800 p-0.5" title="Cancel"><i className="fa-solid fa-xmark text-xs"></i></button>
                                                                                             </div>
                                                                                         ) : (
-                                                                                            <span className="font-black text-sm text-gray-800 truncate pr-2 flex items-center gap-1.5 max-w-[70%]">
+                                                                                            <div className="flex-1 min-w-0 pr-2 flex items-center gap-1.5 flex-wrap">
                                                                                                 <RatelistLinkedClientsTooltip listId={list.id} users={users}>
-                                                                                                    <span className="truncate cursor-help border-b border-dashed border-gray-400" title={cleanName}>{cleanName}</span>
+                                                                                                    <span
+                                                                                                        className="font-black text-sm text-gray-800 truncate cursor-help border-b border-dashed border-gray-400 max-w-[150px] sm:max-w-[190px] inline-block"
+                                                                                                        title={cleanName}
+                                                                                                    >
+                                                                                                        {cleanName}
+                                                                                                    </span>
                                                                                                 </RatelistLinkedClientsTooltip>
-                                                                                                 {parsedInfo && (() => {
-                                                                                                    const motherList = labLists.find(pl => (pl.name.endsWith(' Mother Ratelist') || pl.name.includes('[M]')) && pl.name.startsWith(lab.name));
-                                                                                                    const fallbackMotherName = motherList 
-                                                                                                        ? motherList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() 
+                                                                                                {parsedInfo && (() => {
+                                                                                                    const motherList = labLists.find(pl => {
+                                                                                                        const isPlClone = /\(.*?\bfrom\b.*?\)/i.test(pl.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(pl.name);
+                                                                                                        return !isPlClone && (pl.name === `${lab.name} Mother Ratelist` || pl.name.endsWith(' Mother Ratelist') || !!pl.is_mother_ratelist);
+                                                                                                    });
+                                                                                                    const fallbackMotherName = motherList
+                                                                                                        ? motherList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim()
                                                                                                         : `${lab.name} Mother Ratelist`;
                                                                                                     const sourceName = parsedInfo.sourceName || fallbackMotherName;
                                                                                                     return (
-                                                                                                        <RatelistMarkupTagTooltip 
-                                                                                                            pctStr={parsedInfo.pctStr} 
-                                                                                                            isMarkup={parsedInfo.isMarkup} 
-                                                                                                            motherListName={sourceName} 
+                                                                                                        <RatelistMarkupTagTooltip
+                                                                                                            pctStr={parsedInfo.pctStr}
+                                                                                                            isMarkup={parsedInfo.isMarkup}
+                                                                                                            motherListName={sourceName}
                                                                                                         />
                                                                                                     );
                                                                                                 })()}
@@ -936,7 +900,7 @@ const ManageLabs: React.FC = () => {
                                                                                                     </span>
                                                                                                 )}
                                                                                                 {hasRedOutline && (
-                                                                                                    <div className="relative group/red inline-block">
+                                                                                                    <div className="relative group/red inline-block shrink-0">
                                                                                                         <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-red-100 text-red-700 border border-red-300 uppercase flex items-center gap-1 shrink-0 animate-pulse">
                                                                                                             <i className="fa-solid fa-triangle-exclamation text-[9px]"></i>
                                                                                                             {list.missing_master_count} Missing
@@ -960,30 +924,30 @@ const ManageLabs: React.FC = () => {
                                                                                                     </div>
                                                                                                 )}
                                                                                                 {hasYellowOutline && (
-                                                                                                    <div className="relative group/yellow inline-block">
-                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-amber-100 text-amber-800 border border-amber-300 uppercase flex items-center gap-1 shrink-0">
+                                                                                                    <div className="relative group/yellow inline-block shrink-0">
+                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-yellow-100 text-yellow-900 border border-yellow-300 uppercase flex items-center gap-1 shrink-0">
                                                                                                             <i className="fa-solid fa-circle-exclamation text-[9px]"></i>
                                                                                                             {list.unconfigured_pricing_count || 0} Needs Price
                                                                                                         </span>
                                                                                                         <div className="absolute left-0 top-full mt-1.5 w-56 bg-gray-900 text-white text-[11px] rounded-lg p-2 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/yellow:opacity-100 transition-opacity">
                                                                                                             <span className="font-bold text-amber-300 block mb-0.5">Pricing Alert</span>
                                                                                                             <span className="text-gray-300 leading-tight block">
-                                                                                                                {list.unconfigured_pricing_count || 0} tests have unconfigured pricing (MRP ≤ 0, B2B ≤ 0, or B2B &lt; MRP).
+                                                                                                                {list.unconfigured_pricing_count || 0} tests have unconfigured pricing (MRP ≤ 0, B2B ≤ 0, or B2B &gt; MRP).
                                                                                                             </span>
                                                                                                         </div>
                                                                                                     </div>
                                                                                                 )}
-                                                                                                <button 
+                                                                                                <button
                                                                                                     onClick={() => {
                                                                                                         setRenamingListId(list.id);
                                                                                                         setRenamingListName(getCleanName(list.name));
                                                                                                     }}
-                                                                                                    className="text-gray-400 hover:text-indigo-600 transition-colors p-0.5"
+                                                                                                    className="text-gray-400 hover:text-indigo-600 transition-colors p-0.5 shrink-0"
                                                                                                     title="Rename Database"
                                                                                                 >
                                                                                                     <i className="fa-solid fa-pen text-[9px]"></i>
                                                                                                 </button>
-                                                                                            </span>
+                                                                                            </div>
                                                                                         )}
                                                                                         <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-indigo-50 text-indigo-700 border border-indigo-100 uppercase shrink-0">
                                                                                             {list.package_count || 0} items
@@ -991,56 +955,54 @@ const ManageLabs: React.FC = () => {
                                                                                     </div>
                                                                                     <div className="text-[10px] text-gray-400 font-mono mt-0.5">DB REF ID: #{list.id}</div>
                                                                                 </div>
-                                                                                
+
                                                                                 <div className="flex flex-wrap gap-1.5 pt-2.5 mt-2 border-t border-gray-100">
-                                                                                <button onClick={() => openInventoryModal(list)} className="px-2 py-1 bg-gray-50 hover:bg-yellow-500 hover:text-white rounded border border-gray-200 hover:border-yellow-600 transition-all font-bold text-[10px] text-gray-600 flex items-center gap-1 shadow-sm">
-                                                                                    <i className="fa-solid fa-cubes text-[9px]"></i> Items
-                                                                                </button>
-                                                                                <label 
-                                                                                    className="px-2 py-1 bg-gray-50 hover:bg-green-600 hover:text-white rounded border border-gray-200 hover:border-green-700 transition-all font-bold text-[10px] text-gray-600 flex items-center gap-1 shadow-sm cursor-pointer"
-                                                                                    title="Excel Import. Required columns (in order): code_name, name, mrp, b2b_price."
-                                                                                >
-                                                                                    <i className="fa-solid fa-file-import text-[9px]"></i> XLSX
-                                                                                    <input type="file" accept=".xlsx, .xls" onChange={(e) => handleFileUpload(list.id, e)} className="hidden" />
-                                                                                </label>
-                                                                                <button 
-                                                                                    disabled={isMotherRatelist} 
-                                                                                    onClick={() => openCloneModal(list, lab)} 
-                                                                                    className={`px-2 py-1 rounded border transition-all font-bold text-[10px] flex items-center gap-1 shadow-sm ${
-                                                                                        isMotherRatelist 
-                                                                                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60' 
+                                                                                    <button onClick={() => openInventoryModal(list)} className="px-2 py-1 bg-gray-50 hover:bg-yellow-500 hover:text-white rounded border border-gray-200 hover:border-yellow-600 transition-all font-bold text-[10px] text-gray-600 flex items-center gap-1 shadow-sm">
+                                                                                        <i className="fa-solid fa-cubes text-[9px]"></i> Items
+                                                                                    </button>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() => setExcelImportTargetList(list)}
+                                                                                        className="px-2 py-1 bg-gray-50 hover:bg-emerald-600 hover:text-white rounded border border-gray-200 hover:border-emerald-700 transition-all font-bold text-[10px] text-gray-600 flex items-center gap-1 shadow-sm cursor-pointer"
+                                                                                        title="Import Excel (.xlsx) into this ratelist"
+                                                                                    >
+                                                                                        <i className="fa-solid fa-file-import text-[9px]"></i> XLSX
+                                                                                    </button>
+                                                                                    <button
+                                                                                        disabled={isMotherRatelist}
+                                                                                        onClick={() => openCloneModal(list, lab)}
+                                                                                        className={`px-2 py-1 rounded border transition-all font-bold text-[10px] flex items-center gap-1 shadow-sm ${isMotherRatelist
+                                                                                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
                                                                                             : 'bg-gray-50 hover:bg-blue-600 hover:text-white border-gray-200 hover:border-blue-700 text-gray-600'
-                                                                                    }`}
-                                                                                    title={isMotherRatelist ? "Mother ratelist cannot clone onto itself" : "Clone & scale sync"}
-                                                                                >
-                                                                                    <i className="fa-solid fa-sync text-[9px]"></i> Clone Sync
-                                                                                </button>
-                                                                                <button 
-                                                                                    disabled={isMotherRatelist}
-                                                                                    onClick={() => handleUnassignList(lab.id, list.id)} 
-                                                                                    className={`px-2 py-1 rounded border transition-all font-bold text-[10px] flex items-center gap-1 shadow-sm ${
-                                                                                        isMotherRatelist 
-                                                                                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60' 
+                                                                                            }`}
+                                                                                        title={isMotherRatelist ? "Mother ratelist cannot clone onto itself" : "Clone & scale sync"}
+                                                                                    >
+                                                                                        <i className="fa-solid fa-sync text-[9px]"></i> Clone Sync
+                                                                                    </button>
+                                                                                    <button
+                                                                                        disabled={isMotherRatelist}
+                                                                                        onClick={() => handleUnassignList(lab.id, list.id)}
+                                                                                        className={`px-2 py-1 rounded border transition-all font-bold text-[10px] flex items-center gap-1 shadow-sm ${isMotherRatelist
+                                                                                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
                                                                                             : 'bg-gray-50 hover:bg-amber-600 hover:text-white border-gray-200 hover:border-amber-700 text-gray-600'
-                                                                                    }`} 
-                                                                                    title={isMotherRatelist ? "Mother ratelist cannot be unassigned unless lab is deleted" : "Unassign database"}
-                                                                                >
-                                                                                    <i className="fa-solid fa-link-slash text-[9px]"></i> Unlink
-                                                                                </button>
-                                                                                <button 
-                                                                                    disabled={isMotherRatelist}
-                                                                                    onClick={() => handleDeleteList(list.id)} 
-                                                                                    className={`px-2 py-1 rounded border transition-all font-bold text-[10px] flex items-center gap-1 shadow-sm ml-auto ${
-                                                                                        isMotherRatelist 
-                                                                                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60' 
+                                                                                            }`}
+                                                                                        title={isMotherRatelist ? "Mother ratelist cannot be unassigned unless lab is deleted" : "Unassign database"}
+                                                                                    >
+                                                                                        <i className="fa-solid fa-link-slash text-[9px]"></i> Unlink
+                                                                                    </button>
+                                                                                    <button
+                                                                                        disabled={isMotherRatelist}
+                                                                                        onClick={() => handleDeleteList(list.id)}
+                                                                                        className={`px-2 py-1 rounded border transition-all font-bold text-[10px] flex items-center gap-1 shadow-sm ml-auto ${isMotherRatelist
+                                                                                            ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-60'
                                                                                             : 'bg-gray-50 hover:bg-red-600 hover:text-white border-gray-200 hover:border-red-700 text-gray-600'
-                                                                                    }`} 
-                                                                                    title={isMotherRatelist ? "Mother ratelist cannot be deleted unless lab is deleted" : "Delete Database permanent"}
-                                                                                >
-                                                                                    <i className="fa-solid fa-trash text-[9px]"></i>
-                                                                                </button>
+                                                                                            }`}
+                                                                                        title={isMotherRatelist ? "Mother ratelist cannot be deleted unless lab is deleted" : "Delete Database permanent"}
+                                                                                    >
+                                                                                        <i className="fa-solid fa-trash text-[9px]"></i>
+                                                                                    </button>
+                                                                                </div>
                                                                             </div>
-                                                                        </div>
                                                                         );
                                                                     });
                                                                 })()}
@@ -1087,8 +1049,8 @@ const ManageLabs: React.FC = () => {
                                                                 <span className="text-sm font-bold text-gray-800 uppercase tracking-tight">Spin Up New Database</span>
                                                             </legend>
                                                             <div className="flex gap-2 items-center mt-1">
-                                                                <input 
-                                                                    type="text" 
+                                                                <input
+                                                                    type="text"
                                                                     placeholder="e.g. Apollo B2B 2026"
                                                                     className="flex-grow p-2 border border-gray-205 rounded-lg text-xs bg-slate-50 focus:bg-white outline-none h-[34px]"
                                                                     value={quickAddListName[lab.id] || ''}
@@ -1128,33 +1090,32 @@ const ManageLabs: React.FC = () => {
 
                             <div className="space-y-1 flex-grow overflow-y-auto max-h-[300px] custom-scrollbar-minimal pr-2 border border-gray-150 p-2 rounded-lg my-2">
                                 {allLists.map(list => {
-                                    const isMotherForLab = list.name.endsWith(' Mother Ratelist') && list.name === `${syncingLab.name} Mother Ratelist`;
+                                    const isListClone = /\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name);
+                                    const isMotherForLab = !isListClone && (list.name === `${syncingLab.name} Mother Ratelist` || (list.name.endsWith(' Mother Ratelist') && list.name.startsWith(syncingLab.name)));
                                     return (
-                                        <label 
-                                            key={list.id} 
-                                            className={`flex items-center space-x-3 px-3 py-2 rounded-lg border transition-all ${
-                                                isMotherForLab 
-                                                    ? 'bg-blue-50 border-blue-200 text-blue-800 cursor-not-allowed opacity-80' 
-                                                    : assignedLists.has(list.id) 
-                                                        ? 'bg-blue-600 border-blue-700 text-white shadow-sm cursor-pointer' 
-                                                        : 'bg-gray-50 border-gray-100 hover:border-gray-250 text-gray-600 cursor-pointer'
-                                            }`}
+                                        <label
+                                            key={list.id}
+                                            className={`flex items-center space-x-3 px-3 py-2 rounded-lg border transition-all ${isMotherForLab
+                                                ? 'bg-blue-50 border-blue-200 text-blue-800 cursor-not-allowed opacity-80'
+                                                : assignedLists.has(list.id)
+                                                    ? 'bg-blue-600 border-blue-700 text-white shadow-sm cursor-pointer'
+                                                    : 'bg-gray-50 border-gray-100 hover:border-gray-250 text-gray-600 cursor-pointer'
+                                                }`}
                                         >
-                                            <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${
-                                                isMotherForLab
-                                                    ? 'bg-blue-600 border-blue-700 text-white'
-                                                    : assignedLists.has(list.id) 
-                                                        ? 'bg-white border-white text-blue-600' 
-                                                        : 'bg-white border-gray-300'
-                                            }`}>
+                                            <div className={`w-4 h-4 rounded flex items-center justify-center border transition-all ${isMotherForLab
+                                                ? 'bg-blue-600 border-blue-700 text-white'
+                                                : assignedLists.has(list.id)
+                                                    ? 'bg-white border-white text-blue-600'
+                                                    : 'bg-white border-gray-300'
+                                                }`}>
                                                 {isMotherForLab ? <i className="fa-solid fa-lock text-[8px]"></i> : assignedLists.has(list.id) && <i className="fa-solid fa-check text-[8px]"></i>}
                                             </div>
-                                            <input 
-                                                type="checkbox" 
-                                                className="hidden" 
-                                                disabled={isMotherForLab} 
-                                                checked={assignedLists.has(list.id) || isMotherForLab} 
-                                                onChange={() => handleListToggle(list.id)} 
+                                            <input
+                                                type="checkbox"
+                                                className="hidden"
+                                                disabled={isMotherForLab}
+                                                checked={assignedLists.has(list.id) || isMotherForLab}
+                                                onChange={() => handleListToggle(list.id)}
                                             />
                                             <span className="font-semibold text-xs truncate flex items-center gap-1.5">
                                                 {list.name}
@@ -1272,7 +1233,7 @@ const ManageLabs: React.FC = () => {
                                 </thead>
                                 <tbody className="divide-y divide-gray-50">
                                     {filteredInventoryPackages.map(pkg => {
-                                        const isUnconfigured = pkg.mrp <= 0 || pkg.b2b_price <= 0 || pkg.b2b_price < pkg.mrp;
+                                        const isUnconfigured = pkg.mrp <= 0 || pkg.b2b_price <= 0 || pkg.b2b_price > pkg.mrp;
                                         return (
                                             <tr key={pkg.id} className={`transition-colors group ${isUnconfigured ? 'bg-yellow-50/90 border-l-4 border-yellow-500 ring-1 ring-inset ring-yellow-400' : 'hover:bg-gray-50/50'}`}>
                                                 <td className="p-1 pl-4 w-36">
@@ -1287,9 +1248,7 @@ const ManageLabs: React.FC = () => {
                                                     <div className="flex items-center gap-1.5">
                                                         <input value={pkg.name} onChange={e => handlePackageChange(pkg.id, 'name', e.target.value)} className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm" />
                                                         {isUnconfigured && (
-                                                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black bg-yellow-300 text-yellow-950 uppercase shrink-0 border border-yellow-500 shadow-sm" title="Price Warning: MRP ≤ 0, B2B ≤ 0, or B2B < MRP">
-                                                                Price Alert
-                                                            </span>
+                                                            <PriceAlertTooltip mrp={pkg.mrp} b2b_price={pkg.b2b_price} />
                                                         )}
                                                     </div>
                                                 </td>
@@ -1427,8 +1386,8 @@ const ManageLabs: React.FC = () => {
                                 <div className="grid grid-cols-2 gap-3">
                                     <div className="space-y-1">
                                         <label className="text-[9px] font-bold text-slate-400 uppercase">Discount Percent (%)</label>
-                                        <input 
-                                            type="number" 
+                                        <input
+                                            type="number"
                                             min="0"
                                             max="100"
                                             step="0.01"
@@ -1439,8 +1398,8 @@ const ManageLabs: React.FC = () => {
                                     </div>
                                     <div className="space-y-1">
                                         <label className="text-[9px] font-bold text-slate-400 uppercase">Markup Percent (%)</label>
-                                        <input 
-                                            type="number" 
+                                        <input
+                                            type="number"
                                             min="0"
                                             step="0.01"
                                             className="w-full p-2 border border-gray-200 rounded-lg bg-white font-mono"
@@ -1516,84 +1475,25 @@ const ManageLabs: React.FC = () => {
                 </div>
             )}
 
-            {/* Modal: XLSX Upload Mode Selection */}
-            {pendingExcelUpload && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-200 space-y-4">
-                        <div className="flex items-center gap-3 border-b border-gray-200 pb-3">
-                            <div className="w-8 h-8 rounded bg-green-600 flex items-center justify-center text-white shadow-sm">
-                                <i className="fa-solid fa-file-excel text-xs"></i>
-                            </div>
-                            <div>
-                                <h3 className="text-base font-bold text-gray-800">Excel Import Options</h3>
-                                <p className="text-[10px] text-gray-400 font-bold uppercase truncate max-w-[260px]">
-                                    {pendingExcelUpload.filename} ({pendingExcelUpload.json.length} rows)
-                                </p>
-                            </div>
-                        </div>
+            {/* Global Reusable Excel Import Modal for Rate Lists */}
+            <ExcelImportModal
+                isOpen={!!excelImportTargetList}
+                onClose={() => setExcelImportTargetList(null)}
+                title="Import Ratelist via Excel (.xlsx)"
+                targetName={excelImportTargetList?.name}
+                formatType="RATELIST"
+                onImport={handleRatelistExcelImport}
+            />
 
-                        <div className="space-y-3">
-                            <p className="text-xs text-gray-600">
-                                Choose how you want to apply the spreadsheet to this rate database:
-                            </p>
-
-                            <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${excelUploadMode === 'OVERWRITE' ? 'bg-blue-50/70 border-blue-500 shadow-sm' : 'bg-gray-50 border-gray-200 hover:border-gray-300'}`}>
-                                <input
-                                    type="radio"
-                                    name="excelMode"
-                                    checked={excelUploadMode === 'OVERWRITE'}
-                                    onChange={() => setExcelUploadMode('OVERWRITE')}
-                                    className="mt-0.5 text-blue-600"
-                                />
-                                <div>
-                                    <span className="text-xs font-bold text-gray-900 block flex items-center gap-1.5">
-                                        Overwrite Entire Ratelist
-                                        <span className="px-1.5 py-0.2 rounded text-[8px] font-black bg-blue-100 text-blue-800 uppercase">Recommended Default</span>
-                                    </span>
-                                    <span className="text-[11px] text-gray-500 leading-snug block mt-0.5">
-                                        Clears all existing tests in this rate database and replaces them completely with the Excel sheet.
-                                    </span>
-                                </div>
-                            </label>
-
-                            <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${excelUploadMode === 'APPEND' ? 'bg-blue-50/70 border-blue-500 shadow-sm' : 'bg-gray-50 border-gray-200 hover:border-gray-300'}`}>
-                                <input
-                                    type="radio"
-                                    name="excelMode"
-                                    checked={excelUploadMode === 'APPEND'}
-                                    onChange={() => setExcelUploadMode('APPEND')}
-                                    className="mt-0.5 text-blue-600"
-                                />
-                                <div>
-                                    <span className="text-xs font-bold text-gray-900 block">
-                                        Add to End / Append Existing
-                                    </span>
-                                    <span className="text-[11px] text-gray-500 leading-snug block mt-0.5">
-                                        Updates prices for matching test names and appends new tests to the end without deleting anything.
-                                    </span>
-                                </div>
-                            </label>
-                        </div>
-
-                        <div className="flex justify-end gap-2 pt-3 border-t border-gray-200">
-                            <button
-                                type="button"
-                                onClick={() => setPendingExcelUpload(null)}
-                                className="px-4 py-2 bg-gray-100 text-gray-600 font-bold text-xs rounded-lg hover:bg-gray-200 transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                onClick={handleConfirmExcelUpload}
-                                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center gap-1.5"
-                            >
-                                <i className="fa-solid fa-cloud-arrow-up"></i> Confirm & Import
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* Global Reusable Excel Import Modal for Master Ratelist */}
+            <ExcelImportModal
+                isOpen={isMasterExcelModalOpen}
+                onClose={() => setIsMasterExcelModalOpen(false)}
+                title="Upload Master Ratelist (.xlsx)"
+                targetName="Global Master Test Directory"
+                formatType="MASTER_RATELIST"
+                onImport={handleMasterExcelImport}
+            />
         </div>
     );
 };

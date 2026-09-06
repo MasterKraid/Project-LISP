@@ -65,6 +65,17 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
         return cleaned;
     };
 
+    const isMotherList = (name?: string) => {
+        if (!name) return false;
+        if (/\(.*?\bfrom\b.*?\)/i.test(name)) return false;
+        if (/\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(name)) return false;
+        const clean = name.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+        return clean.endsWith('Mother Ratelist') || 
+               clean.endsWith('Mother Rate List') || 
+               /^\[M\]/i.test(clean) || 
+               /\[M\]$/i.test(clean);
+    };
+
     React.useEffect(() => {
         if (isOpen) {
             apiService.getUsers().then(data => {
@@ -112,8 +123,8 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
         labs.forEach(lab => {
             const lists = activeLists.filter(pl => lab.assigned_list_ids?.includes(pl.id));
             lists.sort((a, b) => {
-                const aIsMother = a.name.endsWith(' Mother Ratelist') || a.name.toLowerCase().includes('mother');
-                const bIsMother = b.name.endsWith(' Mother Ratelist') || b.name.toLowerCase().includes('mother');
+                const aIsMother = isMotherList(a.name);
+                const bIsMother = isMotherList(b.name);
                 if (aIsMother && !bIsMother) return -1;
                 if (!aIsMother && bIsMother) return 1;
                 return a.name.localeCompare(b.name);
@@ -136,11 +147,11 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
     const isClientCreation = isUserCreation && userRole === 'CLIENT';
     const selectedListId = Array.from(selectedListIds)[0];
     const selectedListObj = packageLists.find(pl => pl.id === selectedListId);
-    const isSelectedMother = selectedListObj?.name.endsWith(' Mother Ratelist') || selectedListObj?.name.toLowerCase().includes('mother');
+    const isSelectedMother = isMotherList(selectedListObj?.name);
     const showNextButton = isClientCreation && isSelectedMother;
 
     const handleItemClick = (list: PackageList) => {
-        const isMother = list.name.endsWith(' Mother Ratelist') || list.name.toLowerCase().includes('mother');
+        const isMother = isMotherList(list.name);
 
         if (isClientCreation) {
             // Physically restrict selection to a single list
@@ -163,7 +174,7 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
     };
 
     const handleHeaderClick = (colLists: PackageList[]) => {
-        const motherList = colLists.find(l => l.name.endsWith(' Mother Ratelist') || l.name.toLowerCase().includes('mother'));
+        const motherList = colLists.find(l => isMotherList(l.name));
         if (motherList) {
             if (!selectedListIds.has(motherList.id)) {
                 if (isClientCreation) {
@@ -304,7 +315,7 @@ const RateListAccessModal: React.FC<RateListAccessModalProps> = ({
                                     <div className="flex-1 overflow-y-scroll p-1.5 space-y-1 custom-scrollbar-minimal">
                                         {col.lists.map(list => {
                                             const isSelected = selectedListIds.has(list.id);
-                                            const isMother = list.name.endsWith(' Mother Ratelist') || list.name.toLowerCase().includes('mother');
+                                            const isMother = isMotherList(list.name);
                                             return (
                                                 <div
                                                     key={list.id}

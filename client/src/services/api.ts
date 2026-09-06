@@ -185,10 +185,11 @@ export const apiService = {
 
   // --- Master Ratelist & Aliases ---
   getMasterPackages: (): Promise<MasterPackage[]> => apiFetch('/master-packages'),
-  createMasterPackage: (name: string, code_name?: string): Promise<MasterPackage> => apiFetch('/master-packages', { method: 'POST', body: JSON.stringify({ name, code_name }) }),
+  createMasterPackage: (name: string): Promise<MasterPackage> => apiFetch('/master-packages', { method: 'POST', body: JSON.stringify({ name }) }),
+  bulkUploadMasterPackages: (items: Array<{ test_name: string; aliases?: string[] }>, mode: 'OVERWRITE' | 'APPEND'): Promise<{ message: string; testsAdded: number; aliasesAdded: number }> => apiFetch('/master-packages/bulk-upload', { method: 'POST', body: JSON.stringify({ items, mode }) }),
   deleteMasterPackage: (id: number): Promise<void> => apiFetch(`/master-packages/${id}`, { method: 'DELETE' }),
   addMasterPackageAlias: (masterPackageId: number, alias_name: string): Promise<{ id: number; alias_name: string }> => apiFetch(`/master-packages/${masterPackageId}/aliases`, { method: 'POST', body: JSON.stringify({ alias_name }) }),
-  acceptMasterPackages: (listId: number, packageNames: string[]): Promise<{ inserted: number; message: string }> => apiFetch(`/package-lists/${listId}/accept-master-packages`, { method: 'POST', body: JSON.stringify({ packageNames }) }),
+  acceptMasterPackages: (listId: number, package_names: string[]): Promise<{ count: number; message: string }> => apiFetch(`/package-lists/${listId}/accept-master-packages`, { method: 'POST', body: JSON.stringify({ package_names }) }),
 
   // --- Doctors & Settings ---
   getDoctors: (): Promise<string[]> => apiFetch('/doctors'),

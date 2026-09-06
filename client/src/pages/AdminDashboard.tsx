@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
 import DashboardLink from '../components/DashboardLink';
-import { ReceiptIcon, EstimateIcon, ViewIcon, CustomersIcon, LabsIcon, BranchesIcon, UsersIcon, WalletIcon, LogoutIcon } from '../components/icons';
+import { ReceiptIcon, EstimateIcon, ViewIcon, CustomersIcon, LabsIcon, BranchesIcon, UsersIcon, WalletIcon, LogoutIcon, RatelistIcon } from '../components/icons';
 import { sendLocalNotification } from '../utils/notifications';
 
 const AdminDashboard: React.FC = () => {
@@ -86,6 +86,7 @@ const AdminDashboard: React.FC = () => {
                                 <li><DashboardLink to="/admin/estimates" icon={<ViewIcon />} text="View Estimates" /></li>
                                 <li><DashboardLink to="/admin/customers" icon={<CustomersIcon />} text="View Customers" /></li>
                                 <li><DashboardLink to="/admin/labs" icon={<LabsIcon />} text="Manage Labs" /></li>
+                                <li><DashboardLink to="/my-ratelist" icon={<RatelistIcon />} text="My Ratelist" /></li>
                                 <li><DashboardLink to="/admin/system-status" icon={<i className="fa-solid fa-server"></i>} text="System Telemetry" /></li>
                                 <li><DashboardLink to="/admin/branches" icon={<BranchesIcon />} text="Manage Branches" /></li>
                                 <li><DashboardLink to="/admin/users" icon={<UsersIcon />} text="Manage Users" /></li>

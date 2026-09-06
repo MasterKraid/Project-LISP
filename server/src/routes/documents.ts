@@ -411,9 +411,12 @@ router.get('/receipts/:id', isAuthenticated, (req, res) => {
             const motherList = db.prepare(`
                 SELECT pl.id FROM package_lists pl
                 JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id
-                WHERE lpl.lab_id = ? AND (pl.name LIKE '%Mother Ratelist%' OR pl.name LIKE '%[M]%')
+                WHERE lpl.lab_id = ? 
+                  AND pl.name NOT LIKE '%from%' 
+                  AND (pl.name LIKE '% Mother Ratelist' OR pl.name LIKE '[M]%' OR pl.name LIKE '%[M]')
+                ORDER BY CASE WHEN pl.name = (SELECT name || ' Mother Ratelist' FROM labs WHERE id = ?) THEN 0 ELSE 1 END ASC 
                 LIMIT 1
-            `).get(labInfo.lab_id) as { id: number } | undefined;
+            `).get(labInfo.lab_id, labInfo.lab_id) as { id: number } | undefined;
             if (motherList) motherListId = motherList.id;
         }
 

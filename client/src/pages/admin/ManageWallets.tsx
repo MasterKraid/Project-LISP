@@ -577,7 +577,7 @@ const ManageWallets: React.FC = () => {
                                         type="text"
                                         value={settingsForm.org_name || ''}
                                         onChange={e => setSettingsForm({ ...settingsForm, org_name: e.target.value })}
-                                        placeholder="e.g., Treatment & Cure LLP"
+                                        placeholder="e.g., Treat & Cure"
                                         className="w-full p-2.5 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
                                     />
                                 </div>

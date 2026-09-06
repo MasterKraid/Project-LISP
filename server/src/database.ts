@@ -348,7 +348,6 @@ const schema = `
     CREATE TABLE IF NOT EXISTS master_packages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        code_name TEXT,
         created_at TEXT NOT NULL
     );
 
@@ -517,30 +516,6 @@ export function initDb() {
         console.error('Failed to ensure default admin_settings:', e);
     }
 
-    // Seed master_packages from Mother Ratelists if empty
-    try {
-        const countObj = db.prepare("SELECT COUNT(*) as count FROM master_packages").get() as { count: number };
-        if (countObj.count === 0) {
-            const motherPkgs = db.prepare(`
-                SELECT DISTINCT p.name, p.code_name 
-                FROM packages p 
-                JOIN package_lists pl ON p.package_list_id = pl.id 
-                WHERE pl.name LIKE '%Mother Ratelist%' OR pl.name LIKE '%[M]%'
-            `).all() as any[];
-            const now = new Date().toISOString();
-            const insert = db.prepare("INSERT OR IGNORE INTO master_packages (name, code_name, created_at) VALUES (?, ?, ?)");
-            let inserted = 0;
-            motherPkgs.forEach(p => {
-                if (p.name && p.name.trim()) {
-                    insert.run(p.name.trim().toUpperCase(), p.code_name || null, now);
-                    inserted++;
-                }
-            });
-            console.log(`Seeded ${inserted} master packages from Mother Ratelists.`);
-        }
-    } catch (e) {
-        console.error('Failed to seed master_packages:', e);
-    }
 
     // Seed doctors table from existing receipts if empty
     try {

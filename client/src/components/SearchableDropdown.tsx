@@ -19,11 +19,28 @@ export interface SearchableDropdownHandle {
     focus: () => void;
 }
 
+function parseMarkupTag(label: string) {
+    if (!label) return { cleanText: '', tag: null };
+    const match = label.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i);
+    if (match) {
+        const cleanText = label.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i, '').trim();
+        const pctStr = match[1].replace('+', '').replace('-', '');
+        const isMarkup = !match[1].startsWith('-');
+        const sourceName = match[3]?.trim();
+        return {
+            cleanText: cleanText || label,
+            tag: { pctStr, isMarkup, sourceName }
+        };
+    }
+    return { cleanText: label, tag: null };
+}
+
 const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdownProps>(
     ({ options, value, onChange, placeholder, disabled, onKeyDown }, ref) => {
         const getLabelFromValue = (val: string) => {
             const matched = options.find(opt => opt.value === val);
-            return matched ? matched.label : val;
+            if (!matched) return val;
+            return parseMarkupTag(matched.label).cleanText;
         };
 
         const [isOpen, setIsOpen] = useState(false);
@@ -50,9 +67,12 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                 if (searchTerm === currentLabel || searchTerm === '') {
                     return true;
                 }
-                return option.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                       option.value.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                       (option.code_name && option.code_name.toLowerCase().includes(searchTerm.toLowerCase()));
+                const clean = parseMarkupTag(option.label).cleanText;
+                return (
+                    option.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    clean.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    (option.code_name && option.code_name.toLowerCase().includes(searchTerm.toLowerCase()))
+                );
             });
 
         useEffect(() => {
@@ -63,7 +83,7 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
             const handleClickOutside = (event: MouseEvent) => {
                 if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
                     setIsOpen(false);
-                    setSearchTerm(getLabelFromValue(value)); // Reset search term to current label if no selection was made
+                    setSearchTerm(getLabelFromValue(value));
                 }
             };
             document.addEventListener('mousedown', handleClickOutside);
@@ -72,44 +92,48 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
 
         const handleSelect = (option: Option) => {
             onChange(option.value);
-            setSearchTerm(option.label);
+            setSearchTerm(parseMarkupTag(option.label).cleanText);
             setIsOpen(false);
+            setHighlightedIndex(-1);
         };
 
         const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-            if (isOpen && filteredOptions.length > 0) {
-                if (e.key === 'ArrowDown') {
-                    e.preventDefault();
-                    setHighlightedIndex(prev => (prev + 1) % filteredOptions.length);
-                } else if (e.key === 'ArrowUp') {
-                    e.preventDefault();
-                    setHighlightedIndex(prev => (prev - 1 + filteredOptions.length) % filteredOptions.length);
-                } else if (e.key === 'Enter') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const selectedOption = highlightedIndex >= 0 ? filteredOptions[highlightedIndex] : filteredOptions[0];
-                    if (selectedOption) {
-                        handleSelect(selectedOption);
-                    }
-                } else if (e.key === 'Escape') {
-                    setIsOpen(false);
+            if (disabled) return;
+
+            if (onKeyDown) {
+                onKeyDown(e);
+                if (e.defaultPrevented) return;
+            }
+
+            if (!isOpen) {
+                if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                    setIsOpen(true);
+                    return;
                 }
-            } else if (e.key === 'Enter' && onKeyDown) {
-                // If closed or no options, let the parent handle Enter (e.g. jump to next field)
-                onKeyDown(e);
-            } else if (onKeyDown) {
-                onKeyDown(e);
+            }
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+            } else if (e.key === 'Enter' && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
+                e.preventDefault();
+                handleSelect(filteredOptions[highlightedIndex]);
+            } else if (e.key === 'Escape') {
+                setIsOpen(false);
             }
         };
 
         useEffect(() => {
-            if (highlightedIndex >= 0 && listRef.current) {
-                const highlightedEl = listRef.current.children[highlightedIndex] as HTMLElement;
-                if (highlightedEl) {
-                    highlightedEl.scrollIntoView({ block: 'nearest' });
+            if (isOpen && highlightedIndex >= 0 && listRef.current) {
+                const item = listRef.current.children[highlightedIndex] as HTMLElement;
+                if (item) {
+                    item.scrollIntoView({ block: 'nearest' });
                 }
             }
-        }, [highlightedIndex]);
+        }, [highlightedIndex, isOpen]);
 
         return (
             <div className="relative" ref={wrapperRef}>
@@ -136,20 +160,31 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                 />
                 {isOpen && filteredOptions.length > 0 && (
                     <ul ref={listRef} className="absolute z-50 w-full min-w-[280px] sm:min-w-[320px] md:min-w-[450px] max-w-[calc(100vw-2rem)] right-0 md:right-auto bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto">
-                        {filteredOptions.map((option, index) => (
-                            <li
-                                key={option.value}
-                                onClick={() => handleSelect(option)}
-                                className={`p-2 cursor-pointer flex items-center justify-between gap-2 ${index === highlightedIndex ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'}`}
-                            >
-                                <span>{option.label}</span>
-                                {option.code_name && (
-                                    <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${index === highlightedIndex ? 'bg-blue-500 text-blue-100' : 'bg-slate-100 text-slate-500'}`}>
-                                        {option.code_name}
-                                    </span>
-                                )}
-                            </li>
-                        ))}
+                        {filteredOptions.map((option, index) => {
+                            const { cleanText, tag } = parseMarkupTag(option.label);
+                            return (
+                                <li
+                                    key={option.value}
+                                    onClick={() => handleSelect(option)}
+                                    className={`p-2 cursor-pointer flex items-center justify-between gap-2 ${index === highlightedIndex ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'}`}
+                                >
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span className="truncate">{cleanText}</span>
+                                        {tag && (
+                                            <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[8.5px] font-black uppercase tracking-wider border leading-none shrink-0 ${tag.isMarkup ? (index === highlightedIndex ? 'bg-emerald-600 text-white border-emerald-400' : 'bg-emerald-50 text-emerald-700 border-emerald-200') : (index === highlightedIndex ? 'bg-rose-600 text-white border-rose-400' : 'bg-rose-50 text-rose-700 border-rose-200')}`}>
+                                                <i className={`fa-solid ${tag.isMarkup ? 'fa-arrow-up' : 'fa-arrow-down'} text-[7px] mr-0.5`}></i>
+                                                {tag.pctStr}
+                                            </span>
+                                        )}
+                                    </div>
+                                    {option.code_name && (
+                                        <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${index === highlightedIndex ? 'bg-blue-500 text-blue-100' : 'bg-slate-100 text-slate-500'}`}>
+                                            {option.code_name}
+                                        </span>
+                                    )}
+                                </li>
+                            );
+                        })}
                     </ul>
                 )}
             </div>

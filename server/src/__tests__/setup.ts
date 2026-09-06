@@ -133,6 +133,19 @@ export function createTestDb() {
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (package_list_id) REFERENCES package_lists(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS master_packages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS master_package_aliases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            master_package_id INTEGER NOT NULL,
+            alias_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            FOREIGN KEY (master_package_id) REFERENCES master_packages(id) ON DELETE CASCADE
+        );
     `);
 
     return db;
