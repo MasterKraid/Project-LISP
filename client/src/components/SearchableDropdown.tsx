@@ -13,6 +13,7 @@ interface SearchableDropdownProps {
     placeholder?: string;
     disabled?: boolean;
     onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
+    align?: 'left' | 'right' | 'auto';
 }
 
 export interface SearchableDropdownHandle {
@@ -36,7 +37,7 @@ function parseMarkupTag(label: string) {
 }
 
 const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdownProps>(
-    ({ options, value, onChange, placeholder, disabled, onKeyDown }, ref) => {
+    ({ options, value, onChange, placeholder, disabled, onKeyDown, align = 'auto' }, ref) => {
         const getLabelFromValue = (val: string) => {
             const matched = options.find(opt => opt.value === val);
             if (!matched) return val;
@@ -46,9 +47,25 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
         const [isOpen, setIsOpen] = useState(false);
         const [searchTerm, setSearchTerm] = useState(() => getLabelFromValue(value));
         const [highlightedIndex, setHighlightedIndex] = useState(-1);
+        const [isRightAligned, setIsRightAligned] = useState(align === 'right');
         const wrapperRef = useRef<HTMLDivElement>(null);
         const inputRef = useRef<HTMLInputElement>(null);
         const listRef = useRef<HTMLUListElement>(null);
+
+        useEffect(() => {
+            if (isOpen && wrapperRef.current) {
+                if (align === 'right') {
+                    setIsRightAligned(true);
+                } else if (align === 'left') {
+                    setIsRightAligned(false);
+                } else {
+                    const rect = wrapperRef.current.getBoundingClientRect();
+                    const overflowsRight = (rect.left + 350 > window.innerWidth);
+                    const isRightHalf = (rect.left + rect.width / 2 > window.innerWidth / 2);
+                    setIsRightAligned(overflowsRight || isRightHalf);
+                }
+            }
+        }, [isOpen, align]);
 
         useImperativeHandle(ref, () => ({
             focus: () => {
@@ -159,7 +176,7 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                     className="w-full p-2 border rounded bg-white cursor-pointer"
                 />
                 {isOpen && filteredOptions.length > 0 && (
-                    <ul ref={listRef} className="absolute z-50 w-full min-w-[280px] sm:min-w-[320px] md:min-w-[450px] max-w-[calc(100vw-2rem)] right-0 md:right-auto bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto">
+                    <ul ref={listRef} className={`absolute z-50 w-full min-w-[280px] sm:min-w-[320px] md:min-w-[380px] max-w-[calc(100vw-2rem)] ${isRightAligned ? 'right-0 left-auto' : 'left-0 right-auto'} bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto`}>
                         {filteredOptions.map((option, index) => {
                             const { cleanText, tag } = parseMarkupTag(option.label);
                             return (

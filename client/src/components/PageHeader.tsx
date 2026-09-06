@@ -55,6 +55,7 @@ const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBack
                                         }
                                     }}
                                     placeholder="Search client..."
+                                    align="right"
                                 />
                             </div>
                             {actingAsClient && (

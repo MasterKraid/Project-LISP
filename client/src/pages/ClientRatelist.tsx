@@ -370,7 +370,7 @@ const ClientRatelist: React.FC = () => {
                     Edit Tests
                 </button>
                 <button 
-                    onClick={() => navigate('/dashboard')} 
+                    onClick={() => navigate(user?.role === 'ADMIN' ? '/admin-dashboard' : '/dashboard')} 
                     className="px-5 md:px-8 py-2.5 md:py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-900 shadow-xl shadow-slate-200 transition-all active:scale-95 text-xs md:text-sm whitespace-nowrap"
                 >
                     Exit to Dashboard
@@ -390,7 +390,7 @@ const ClientRatelist: React.FC = () => {
                             </div>
                             <h2 className="font-bold text-slate-800 text-sm uppercase tracking-wide">Step {step} of 4</h2>
                         </div>
-                        <button type="button" onClick={() => navigate('/dashboard')} className="text-slate-400 hover:text-red-500 transition-colors">
+                        <button type="button" onClick={() => navigate(user?.role === 'ADMIN' ? '/admin-dashboard' : '/dashboard')} className="text-slate-400 hover:text-red-500 transition-colors">
                             <i className="fa-solid fa-circle-xmark text-xl"></i>
                         </button>
                     </header>
