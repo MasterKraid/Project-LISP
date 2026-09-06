@@ -22,7 +22,7 @@ const prefixOptions = ['Mr.', 'Mrs.', 'Miss.', 'Baby.', 'Master.', 'Dr.', 'B/O',
 const ReceiptForm: React.FC = () => {
     const { id } = useParams() as { id?: string };
     const isEditMode = id !== undefined;
-    const { user, branch, updateUser, actingAsClient, setActingAsClient } = useAuth();
+    const { user, branch, updateUser, refreshUser, actingAsClient, setActingAsClient } = useAuth();
     const navigate = useNavigate();
 
 
@@ -33,6 +33,8 @@ const ReceiptForm: React.FC = () => {
     const [labs, setLabs] = useState<Lab[]>([]);
     const [packageLists, setPackageLists] = useState<PackageList[]>([]);
     const [packages, setPackages] = useState<Package[]>([]);
+    const [doctorSuggestions, setDoctorSuggestions] = useState<string[]>([]);
+    const editPendingListId = useRef<string | null>(null);
 
     // Form states
     const [selectedLabId, setSelectedLabId] = useState('');
@@ -80,6 +82,40 @@ const ReceiptForm: React.FC = () => {
     const referredByRef = useRef<HTMLInputElement>(null);
     const itemRefs = useRef<{ [key: number]: SearchableDropdownHandle | null }>({});
 
+    // Load registered doctors for autosuggest
+    useEffect(() => {
+        apiService.getDoctors().then(setDoctorSuggestions).catch(console.error);
+    }, []);
+
+    const handleDoctorFocus = () => {
+        if (!details.referred_by || details.referred_by.trim() === '' || details.referred_by.trim().toUpperCase() === 'SELF') {
+            setDetails(prev => ({ ...prev, referred_by: 'Dr. ' }));
+        }
+    };
+
+    const handleDoctorChange = (val: string) => {
+        if (!val || val.trim() === '') {
+            setDetails(prev => ({ ...prev, referred_by: '' }));
+            return;
+        }
+        if (val.toLowerCase().startsWith('dr. ')) {
+            const rest = val.slice(4).toUpperCase();
+            setDetails(prev => ({ ...prev, referred_by: `Dr. ${rest}` }));
+        } else if (val.toLowerCase().startsWith('dr.')) {
+            const rest = val.slice(3).trimStart().toUpperCase();
+            setDetails(prev => ({ ...prev, referred_by: `Dr. ${rest}` }));
+        } else {
+            setDetails(prev => ({ ...prev, referred_by: `Dr. ${val.toUpperCase()}` }));
+        }
+    };
+
+    const handleDoctorBlur = () => {
+        const trimmed = (details.referred_by || '').trim();
+        if (!trimmed || trimmed.toUpperCase() === 'DR.' || trimmed.toUpperCase() === 'DR. ' || trimmed.toUpperCase() === 'SELF') {
+            setDetails(prev => ({ ...prev, referred_by: 'Self' }));
+        }
+    };
+
     useEffect(() => {
         if (isClientMode) {
             setCustomerMode('new');
@@ -98,7 +134,7 @@ const ReceiptForm: React.FC = () => {
             setLabs(data);
             if (data.length > 0) {
                 const currentLabStillExists = data.some(l => l.id.toString() === selectedLabId);
-                if (!currentLabStillExists) {
+                if (!currentLabStillExists && !id) {
                     setSelectedLabId(data[0].id.toString());
                 }
             } else {
@@ -121,6 +157,11 @@ const ReceiptForm: React.FC = () => {
                         setIsLocked(true);
                     }
 
+                    // Auto-select Master Entry client if this was created on behalf of client
+                    if (receipt.acting_as_client) {
+                        setActingAsClient(receipt.acting_as_client);
+                    }
+
                     // Load customer
                     setSelectedCustomer(customer);
                     setNewCustomer({
@@ -137,23 +178,31 @@ const ReceiptForm: React.FC = () => {
                     });
 
                     // Load receipt details
-                    setSelectedLabId(receipt.branch_id.toString());
+                    const targetLabId = receipt.lab_id ? receipt.lab_id.toString() : '';
+                    const targetListId = receipt.package_list_id ? receipt.package_list_id.toString() : '';
+                    if (targetLabId) setSelectedLabId(targetLabId);
+                    if (targetListId) {
+                        setSelectedListId(targetListId);
+                        editPendingListId.current = targetListId;
+                    }
+
                     setDetails({
                         amount_received: receipt.amount_received.toString(),
                         due_amount_manual: receipt.amount_due.toString(),
                         num_tests: receipt.num_tests?.toString() || '',
-                        referred_by: receipt.referred_by || '',
+                        referred_by: receipt.referred_by || 'Self',
                         payment_method: receipt.payment_method,
                         notes: receipt.notes || ''
                     });
 
-                    // Load items
+                    // Load items and preserve their prices
                     const formatted = receiptItems.map((item, idx) => ({
                         id: Date.now() + idx,
                         name: item.package_name,
                         mrp: item.mrp,
                         b2b_price: item.b2b_price || 0,
                         discount: item.discount_percentage,
+                        package_list_id: item.package_list_id || receipt.package_list_id,
                         isFromDb: true
                     }));
                     setItems(formatted);
@@ -169,16 +218,25 @@ const ReceiptForm: React.FC = () => {
 
     // Handle cascading dropdowns
     useEffect(() => {
-        setPackageLists([]);
-        setPackages([]);
-        setSelectedListId('');
         if (selectedLabId && user) {
             apiService.getPackageListsForLab(parseInt(selectedLabId)).then(data => {
                 setPackageLists(data);
                 if (data.length > 0) {
-                    setSelectedListId(data[0].id.toString());
+                    if (editPendingListId.current && data.some(l => l.id.toString() === editPendingListId.current)) {
+                        setSelectedListId(editPendingListId.current);
+                        editPendingListId.current = null;
+                    } else if (selectedListId && data.some(l => l.id.toString() === selectedListId)) {
+                        // keep current list selection
+                    } else {
+                        setSelectedListId(data[0].id.toString());
+                    }
+                } else {
+                    setSelectedListId('');
                 }
             });
+        } else {
+            setPackageLists([]);
+            setSelectedListId('');
         }
     }, [selectedLabId, user, actingAsClient]);
 
@@ -193,19 +251,16 @@ const ReceiptForm: React.FC = () => {
 
     // Validate and update item prices when package list changes (e.g. lab/category switch)
     useEffect(() => {
-        if (items.length > 0) {
+        if (packages.length > 0 && items.length > 0) {
             setItems(prevItems => {
                 let changed = false;
                 const updated = prevItems.map(item => {
                     if (item.name && item.isFromDb) {
                         const matchedPkg = packages.find(p => p.name === item.name);
                         if (!matchedPkg) {
-                            changed = true;
-                            // Reset pricing for items not present in the new category
-                            return { ...item, mrp: 0, b2b_price: 0, isFromDb: false };
+                            return item; // Do not wipe prices if test not in list during load
                         } else if (item.mrp !== matchedPkg.mrp || item.b2b_price !== matchedPkg.b2b_price) {
                             changed = true;
-                            // Update prices to match the new category
                             return { ...item, mrp: matchedPkg.mrp, b2b_price: matchedPkg.b2b_price };
                         }
                     }
@@ -489,6 +544,7 @@ const ReceiptForm: React.FC = () => {
             customer_data: { id: selectedCustomer?.id, ...newCustomer },
             lab_id: parseInt(selectedLabId),
             package_list_id: parseInt(selectedListId),
+            acting_as_client_id: actingAsClient ? actingAsClient.id : undefined,
             items: validItems.map(({ id, isFromDb, ...rest }) => ({
                 ...rest,
                 package_list_id: parseInt(selectedListId),
@@ -506,6 +562,9 @@ const ReceiptForm: React.FC = () => {
         try {
             if (isEditMode) {
                 await apiService.updateReceipt(parseInt(id!, 10), payload);
+                if (refreshUser) {
+                    await refreshUser();
+                }
                 if (user?.role === 'CLIENT') {
                     alert("Receipt saved successfully!");
                     navigate('/');
@@ -723,7 +782,23 @@ const ReceiptForm: React.FC = () => {
 
                 <div className="md:col-span-2 pt-2">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 px-1">Referred By / Doctor</label>
-                    <input ref={referredByRef} onKeyDown={e => handleCustomerKeyDown(e, 'tests')} type="text" value={details.referred_by || ''} onChange={e => setDetails({ ...details, referred_by: e.target.value })} className="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50" placeholder="Self" />
+                    <input 
+                        ref={referredByRef} 
+                        onKeyDown={e => handleCustomerKeyDown(e, 'tests')} 
+                        type="text" 
+                        list="doctor-suggestions"
+                        value={details.referred_by || ''} 
+                        onFocus={handleDoctorFocus}
+                        onChange={e => handleDoctorChange(e.target.value)} 
+                        onBlur={handleDoctorBlur}
+                        className="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50" 
+                        placeholder="Self" 
+                    />
+                    <datalist id="doctor-suggestions">
+                        {doctorSuggestions.map((doc, idx) => (
+                            <option key={idx} value={doc} />
+                        ))}
+                    </datalist>
                 </div>
 
                 {/* Contact Section: Mobile & Email */}

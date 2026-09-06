@@ -65,6 +65,10 @@ const CopyableTitleField: React.FC<{ label: string; value: string }> = ({ label,
 const CopyableField: React.FC<{ label: string; value: string; prefix?: string }> = ({ label, value, prefix }) => {
   const [copied, setCopied] = useState(false);
 
+  if (!value || value.trim() === '' || value.trim().toUpperCase() === 'N/A') {
+    return null;
+  }
+
   const handleCopy = () => {
     navigator.clipboard.writeText(value || '');
     setCopied(true);
@@ -86,7 +90,7 @@ const CopyableField: React.FC<{ label: string; value: string; prefix?: string }>
               {prefix}
             </span>
           )}
-          <span>{value || 'N/A'}</span>
+          <span>{value}</span>
         </div>
       </div>
       <div className="text-slate-400 group-hover:text-indigo-650 transition-colors shrink-0">
@@ -502,7 +506,6 @@ const DataEntryPortal: React.FC = () => {
                   <CopyableField label="Referred By" value={selectedReceipt.referred_by || 'Self Referral'} />
                   <CopyableField label="Total Tests Count" value={String(selectedReceipt.items?.length || selectedReceipt.num_tests || 0)} />
                   <CopyableField label="Total MRP" value={`₹${(selectedReceipt.total_mrp || 0).toFixed(0)}`} />
-                  <CopyableField label="Processing Laboratory" value={selectedReceipt.lab_name || 'N/A'} />
                 </div>
               </div>
 

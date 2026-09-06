@@ -344,6 +344,26 @@ const schema = `
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (package_list_id) REFERENCES package_lists(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS master_packages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        code_name TEXT,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS master_package_aliases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        master_package_id INTEGER NOT NULL,
+        alias_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        FOREIGN KEY (master_package_id) REFERENCES master_packages(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS doctors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        created_at TEXT NOT NULL
+    );
 `;
 
 export function initDb() {
@@ -488,5 +508,64 @@ export function initDb() {
         }
     } catch (e) {
         console.error('Failed to run seeded users password hash migration:', e);
+    }
+
+    // Ensure default admin_settings row
+    try {
+        db.prepare("INSERT OR IGNORE INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'Studio Kivx Labs', 'Project LISP')").run();
+    } catch (e) {
+        console.error('Failed to ensure default admin_settings:', e);
+    }
+
+    // Seed master_packages from Mother Ratelists if empty
+    try {
+        const countObj = db.prepare("SELECT COUNT(*) as count FROM master_packages").get() as { count: number };
+        if (countObj.count === 0) {
+            const motherPkgs = db.prepare(`
+                SELECT DISTINCT p.name, p.code_name 
+                FROM packages p 
+                JOIN package_lists pl ON p.package_list_id = pl.id 
+                WHERE pl.name LIKE '%Mother Ratelist%' OR pl.name LIKE '%[M]%'
+            `).all() as any[];
+            const now = new Date().toISOString();
+            const insert = db.prepare("INSERT OR IGNORE INTO master_packages (name, code_name, created_at) VALUES (?, ?, ?)");
+            let inserted = 0;
+            motherPkgs.forEach(p => {
+                if (p.name && p.name.trim()) {
+                    insert.run(p.name.trim().toUpperCase(), p.code_name || null, now);
+                    inserted++;
+                }
+            });
+            console.log(`Seeded ${inserted} master packages from Mother Ratelists.`);
+        }
+    } catch (e) {
+        console.error('Failed to seed master_packages:', e);
+    }
+
+    // Seed doctors table from existing receipts if empty
+    try {
+        const docCount = db.prepare("SELECT COUNT(*) as count FROM doctors").get() as { count: number };
+        if (docCount.count === 0) {
+            const docs = db.prepare(`
+                SELECT DISTINCT referred_by FROM receipts 
+                WHERE referred_by IS NOT NULL 
+                  AND TRIM(referred_by) != '' 
+                  AND UPPER(TRIM(referred_by)) != 'SELF'
+            `).all() as any[];
+            const now = new Date().toISOString();
+            const insertDoc = db.prepare("INSERT OR IGNORE INTO doctors (name, created_at) VALUES (?, ?)");
+            let docInserted = 0;
+            docs.forEach(d => {
+                let docName = d.referred_by.trim().toUpperCase();
+                if (!docName.startsWith('DR.') && !docName.startsWith('DR ')) {
+                    docName = 'DR. ' + docName;
+                }
+                insertDoc.run(docName, now);
+                docInserted++;
+            });
+            console.log(`Seeded ${docInserted} doctors into doctor database.`);
+        }
+    } catch (e) {
+        console.error('Failed to seed doctors:', e);
     }
 }

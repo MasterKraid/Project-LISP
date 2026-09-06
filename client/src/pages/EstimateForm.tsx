@@ -208,24 +208,30 @@ const EstimateForm: React.FC = () => {
     const getPrice = (testId: number, labId: number) => {
         if (!comparisonData) return null;
         const p = comparisonData.prices.find(p => p.test_id === testId && p.lab_id === labId);
-        return p ? p.price : null;
+        return p && p.price > 0 ? p.price : null;
     };
 
-    const labTotals = useMemo(() => {
-        if (!comparisonData) return {};
+    const labSummary = useMemo(() => {
+        if (!comparisonData) return { totals: {} as { [labId: number]: number }, incomplete: {} as { [labId: number]: boolean } };
         const totals: { [labId: number]: number } = {};
-        comparisonData.labs.forEach(l => totals[l.id] = 0);
+        const incomplete: { [labId: number]: boolean } = {};
+        comparisonData.labs.forEach(l => {
+            totals[l.id] = 0;
+            incomplete[l.id] = false;
+        });
 
         selectedTestIds.forEach(testId => {
             comparisonData.labs.forEach(lab => {
                 const price = getPrice(testId, lab.id);
-                if (price !== null) {
+                if (price !== null && price > 0) {
                     totals[lab.id] += price;
+                } else {
+                    incomplete[lab.id] = true;
                 }
             });
         });
 
-        return totals;
+        return { totals, incomplete };
     }, [comparisonData, selectedTestIds]);
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -333,7 +339,7 @@ const EstimateForm: React.FC = () => {
                                                                 const price = getPrice(testId, lab.id);
                                                                 return (
                                                                     <td key={lab.id} className="p-3 text-center border-r border-slate-200 font-mono">
-                                                                        {price !== null ? `₹${price.toFixed(2)}` : <span className="text-slate-400">-</span>}
+                                                                        {price !== null ? `₹${price.toFixed(2)}` : <span className="text-rose-600 font-bold text-xs italic">Inadequate Data</span>}
                                                                     </td>
                                                                 );
                                                             })}
@@ -347,11 +353,20 @@ const EstimateForm: React.FC = () => {
                                 <tfoot>
                                     <tr className="bg-indigo-50 border-t-2 border-indigo-200">
                                         <td className="p-3 font-bold text-indigo-900 border-r border-indigo-200 text-right uppercase">Total Estimated Payable</td>
-                                        {comparisonData?.labs.map(lab => (
-                                            <td key={'total-' + lab.id} className="p-3 text-center font-bold text-indigo-900 border-r border-indigo-200 text-lg font-mono">
-                                                ₹{labTotals[lab.id] ? labTotals[lab.id].toFixed(2) : '0.00'}
-                                            </td>
-                                        ))}
+                                        {comparisonData?.labs.map(lab => {
+                                            const isInc = labSummary.incomplete[lab.id];
+                                            const totalVal = labSummary.totals[lab.id] || 0;
+                                            return (
+                                                <td key={'total-' + lab.id} className="p-3 text-center font-bold text-indigo-900 border-r border-indigo-200 text-base font-mono">
+                                                    ₹{totalVal.toFixed(2)}
+                                                    {isInc && (
+                                                        <span className="text-[10px] text-rose-600 font-bold block mt-0.5" title="Some tests are unavailable in this laboratory's Mother Ratelist">
+                                                            (Incomplete)
+                                                        </span>
+                                                    )}
+                                                </td>
+                                            );
+                                        })}
                                     </tr>
                                 </tfoot>
                             </table>
@@ -649,7 +664,7 @@ const EstimateForm: React.FC = () => {
                                                             const price = getPrice(testId, lab.id);
                                                             return (
                                                                 <td key={lab.id} className="p-2 text-center border-r border-slate-200 font-mono text-slate-600">
-                                                                    {price !== null ? price : '-'}
+                                                                    {price !== null ? `₹${price.toFixed(2)}` : <span className="text-rose-500 font-bold text-[10px] italic">Inadequate Data</span>}
                                                                 </td>
                                                             );
                                                         })}

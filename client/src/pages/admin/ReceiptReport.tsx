@@ -49,6 +49,24 @@ const ReceiptReport: React.FC = () => {
     const [matrixMetric, setMatrixMetric] = useState<'B2B' | 'MRP'>('B2B');
     const [biMetrics, setBiMetrics] = useState<{ mostUsedTests: any[]; mostUsedLabs: any[] } | null>(null);
 
+    // Test Breakup Modal State
+    const [breakupReceipt, setBreakupReceipt] = useState<Document | null>(null);
+    const [breakupItems, setBreakupItems] = useState<any[]>([]);
+    const [isLoadingBreakup, setIsLoadingBreakup] = useState(false);
+
+    const handleRowClick = async (r: Document) => {
+        setBreakupReceipt(r);
+        setIsLoadingBreakup(true);
+        try {
+            const fullReceipt = await apiService.getReceiptById(r.id);
+            setBreakupItems(fullReceipt.items || []);
+        } catch (err) {
+            console.error("Failed to load test breakup", err);
+        } finally {
+            setIsLoadingBreakup(false);
+        }
+    };
+
     useEffect(() => {
         const loadData = async () => {
             try {
@@ -398,7 +416,7 @@ const ReceiptReport: React.FC = () => {
         }
 
         return (
-            <div className="relative">
+            <div className="relative z-20 overflow-visible">
                 <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible select-none">
                     <defs>
                         <linearGradient id="areaGradient" x1="0" y1="0" x2="0" y2="1">
@@ -480,7 +498,7 @@ const ReceiptReport: React.FC = () => {
                 {/* Custom hovering interactive tooltip modal */}
                 {tooltip.show && (
                     <div
-                        className="absolute bg-slate-950/95 backdrop-blur-md text-white p-3.5 rounded-2xl shadow-2xl border border-slate-800/80 pointer-events-none transition-all duration-150 z-30"
+                        className="absolute bg-slate-950/95 backdrop-blur-md text-white p-3.5 rounded-2xl shadow-2xl border border-slate-800/80 pointer-events-none transition-all duration-150 z-50"
                         style={{
                             left: `${(tooltip.x / width) * 100}%`,
                             top: `${(tooltip.y / height) * 100 - 10}%`,
@@ -1084,7 +1102,7 @@ const ReceiptReport: React.FC = () => {
                                         </button>
                                     </div>
                                 </div>
-                                <div className="overflow-x-auto rounded-2xl border border-slate-150">
+                                <div className="overflow-visible rounded-2xl border border-slate-150">
                                     <table className="w-full text-left border-collapse">
                                         <thead>
                                             <tr className="bg-slate-50 border-b border-slate-150 text-[11px] font-black text-slate-400 uppercase tracking-widest">
@@ -1098,7 +1116,7 @@ const ReceiptReport: React.FC = () => {
                                             {periodRanges.map((months, idx) => {
                                                 const stats = getStatsForWindow(months, matrixMetric);
                                                 return (
-                                                    <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                                                    <tr key={idx} style={{ position: 'relative', zIndex: 40 - idx }} className="hover:bg-slate-50/50 transition-colors">
                                                         <td className="p-4 pl-5">
                                                             <div className="flex items-center gap-2">
                                                                 <span className="text-slate-800 font-extrabold">
@@ -1346,8 +1364,16 @@ const ReceiptReport: React.FC = () => {
                                             const motherCost = r.mother_b2b_cost || 0;
                                             const profit = r.acting_as_client_id ? ((r.b2b_cost || 0) - motherCost) : ((r.amount_final || 0) - motherCost);
                                             return (
-                                                <tr key={r.id} className="hover:bg-slate-50/50 transition-colors">
-                                                    <td className="p-3 pl-4 font-mono font-bold text-slate-800">{r.display_doc_id}</td>
+                                                <tr 
+                                                    key={r.id} 
+                                                    onClick={() => handleRowClick(r)}
+                                                    className="hover:bg-indigo-50/40 cursor-pointer transition-colors group"
+                                                    title="Click to view test itemized breakup"
+                                                >
+                                                    <td className="p-3 pl-4 font-mono font-bold text-indigo-600 group-hover:underline flex items-center gap-1.5">
+                                                        <span>{r.display_doc_id}</span>
+                                                        <i className="fa-solid fa-arrow-up-right-from-square text-[9px] opacity-0 group-hover:opacity-100 transition-opacity"></i>
+                                                    </td>
                                                     <td className="p-3">{r.display_date}</td>
                                                     <td className="p-3 font-bold text-slate-800">{r.customer_name}</td>
                                                     <td className="p-3 font-mono text-[10px]">{r.display_customer_id}</td>
@@ -1376,6 +1402,121 @@ const ReceiptReport: React.FC = () => {
                                     )}
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Test Breakup Modal */}
+            {breakupReceipt && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 max-w-4xl w-full p-6 space-y-4 animate-fade-in-up flex flex-col max-h-[90vh]">
+                        <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm">
+                                    <i className="fa-solid fa-flask-vial"></i>
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide">
+                                        Test Itemized Breakup - {breakupReceipt.display_doc_id}
+                                    </h3>
+                                    <p className="text-[11px] text-slate-400 font-bold">
+                                        {breakupReceipt.customer_name} • {breakupReceipt.display_date}
+                                    </p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setBreakupReceipt(null)}
+                                className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                            >
+                                <i className="fa-solid fa-xmark"></i>
+                            </button>
+                        </div>
+
+                        {/* Summary Badges */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-3 rounded-2xl border border-slate-200/80 text-xs">
+                            <div>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Laboratory</span>
+                                <span className="font-extrabold text-indigo-700 truncate block">{breakupReceipt.lab_name}</span>
+                            </div>
+                            <div>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Operator</span>
+                                <span className="font-extrabold text-slate-700 truncate block">{breakupReceipt.created_by_user}</span>
+                            </div>
+                            <div>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">B2C Gross / MRP</span>
+                                <span className="font-mono font-bold text-slate-800 block">₹{(breakupReceipt.total_mrp || 0).toFixed(0)}</span>
+                            </div>
+                            <div>
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Net Payable</span>
+                                <span className="font-mono font-black text-indigo-600 block">{breakupReceipt.display_amount}</span>
+                            </div>
+                        </div>
+
+                        {/* Items Table */}
+                        <div className="overflow-y-auto flex-grow rounded-2xl border border-slate-150">
+                            {isLoadingBreakup ? (
+                                <div className="p-12 text-center text-slate-400">
+                                    <i className="fa-solid fa-spinner fa-spin text-xl text-indigo-500 mb-2"></i>
+                                    <p className="text-xs font-bold uppercase tracking-wider">Loading test breakdown...</p>
+                                </div>
+                            ) : (
+                                <table className="w-full text-left border-collapse">
+                                    <thead className="bg-slate-50 sticky top-0">
+                                        <tr className="border-b border-slate-150 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                                            <th className="p-3 pl-4 w-28">Test Code</th>
+                                            <th className="p-3">Test / Package Name</th>
+                                            <th className="p-3 text-right w-24">MRP</th>
+                                            <th className="p-3 text-right w-24">B2B Price</th>
+                                            <th className="p-3 text-right w-24">Mother Cost</th>
+                                            <th className="p-3 text-right w-24 pr-4">Margin</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 text-xs font-semibold text-slate-600">
+                                        {breakupItems.map((item, idx) => {
+                                            const itemMargin = (item.b2b_price || item.mrp || 0) - (item.mother_cost || 0);
+                                            return (
+                                                <tr key={idx} className="hover:bg-slate-50/50">
+                                                    <td className="p-3 pl-4 font-mono font-bold text-slate-500">{item.code_name || '-'}</td>
+                                                    <td className="p-3 font-bold text-slate-800">{item.package_name}</td>
+                                                    <td className="p-3 text-right font-mono text-slate-600">₹{(item.mrp || 0).toFixed(0)}</td>
+                                                    <td className="p-3 text-right font-mono font-bold text-indigo-600">₹{(item.b2b_price || 0).toFixed(0)}</td>
+                                                    <td className="p-3 text-right font-mono text-slate-400">₹{(item.mother_cost || 0).toFixed(0)}</td>
+                                                    <td className={`p-3 pr-4 text-right font-mono font-black ${itemMargin >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                        ₹{itemMargin.toFixed(0)}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                    <tfoot className="bg-slate-50 border-t border-slate-200 font-bold text-xs text-slate-800">
+                                        <tr>
+                                            <td colSpan={2} className="p-3 pl-4">Total ({breakupItems.length} Tests)</td>
+                                            <td className="p-3 text-right font-mono">
+                                                ₹{breakupItems.reduce((s, i) => s + (i.mrp || 0), 0).toFixed(0)}
+                                            </td>
+                                            <td className="p-3 text-right font-mono text-indigo-600 font-black">
+                                                ₹{breakupItems.reduce((s, i) => s + (i.b2b_price || 0), 0).toFixed(0)}
+                                            </td>
+                                            <td className="p-3 text-right font-mono text-slate-500">
+                                                ₹{breakupItems.reduce((s, i) => s + (i.mother_cost || 0), 0).toFixed(0)}
+                                            </td>
+                                            <td className="p-3 pr-4 text-right font-mono text-emerald-600 font-black">
+                                                ₹{breakupItems.reduce((s, i) => s + ((i.b2b_price || i.mrp || 0) - (i.mother_cost || 0)), 0).toFixed(0)}
+                                            </td>
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            )}
+                        </div>
+
+                        <div className="flex justify-end pt-2 border-t border-slate-100">
+                            <button
+                                onClick={() => setBreakupReceipt(null)}
+                                className="px-5 py-2 bg-slate-800 hover:bg-black text-white font-bold rounded-xl text-xs transition-all shadow-sm"
+                            >
+                                Close
+                            </button>
                         </div>
                     </div>
                 </div>

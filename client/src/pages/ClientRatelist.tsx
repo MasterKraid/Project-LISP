@@ -8,7 +8,7 @@ import { Lab, PackageList, Package } from '../types';
 import MultiSelectSearchWithSummary from '../components/MultiSelectSearchWithSummary';
 
 const ClientRatelist: React.FC = () => {
-    const { user } = useAuth();
+    const { user, actingAsClient } = useAuth();
     const navigate = useNavigate();
 
     // Data states
@@ -33,11 +33,13 @@ const ClientRatelist: React.FC = () => {
     useEffect(() => {
         apiService.getLabs().then(data => {
             setLabs(data);
-            if (data.length > 0 && !selectedLabId) {
+            if (data.length > 0) {
                 setSelectedLabId(data[0].id.toString());
+            } else {
+                setSelectedLabId('');
             }
         });
-    }, []);
+    }, [actingAsClient]);
 
     useEffect(() => {
         setPackageLists([]);
@@ -52,7 +54,7 @@ const ClientRatelist: React.FC = () => {
                 }
             });
         }
-    }, [selectedLabId, user]);
+    }, [selectedLabId, user, actingAsClient]);
 
     useEffect(() => {
         setPackages([]);

@@ -7,6 +7,7 @@ import SearchableDropdown from './SearchableDropdown';
 const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBackLink?: boolean, backLink?: string, backText?: string, showActingAs?: boolean }> = ({ title, subtitle, showBackLink = true, backLink, backText, showActingAs = true }) => {
     const { user, actingAsClient, setActingAsClient } = useAuth();
     const [clients, setClients] = React.useState<any[]>([]);
+    const [labName, setLabName] = React.useState<string>('');
 
     React.useEffect(() => {
         if (user && (user.role === 'ADMIN' || user.master_data_entry)) {
@@ -16,6 +17,11 @@ const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBack
                 });
             });
         }
+        import('../services/api').then(({ apiService }) => {
+            apiService.getAdminSettings().then(s => {
+                if (s?.lab_name) setLabName(s.lab_name);
+            }).catch(() => {});
+        });
     }, [user]);
 
     const getDashboardLink = () => {
@@ -28,8 +34,13 @@ const PageHeader: React.FC<{ title: string, subtitle?: React.ReactNode, showBack
     return (
         <header className="border-b border-gray-200 pb-5 mb-6 flex flex-col md:flex-row md:justify-between md:items-center gap-4">
             <div>
-                <h1 className="m-0 text-left text-2xl font-bold text-gray-800 flex items-center gap-3">
+                <h1 className="m-0 text-left text-2xl font-bold text-gray-800 flex items-center gap-3 flex-wrap">
                     {title}
+                    {labName && (
+                        <span className="text-xs px-2.5 py-1 font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200 tracking-wide">
+                            {labName}
+                        </span>
+                    )}
                 </h1>
                 {subtitle && <div className="mt-1">{subtitle}</div>}
             </div>

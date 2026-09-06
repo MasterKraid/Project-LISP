@@ -105,7 +105,6 @@ const AdminDashboard: React.FC = () => {
                                     />
                                 </li>
                                 <li><DashboardLink to="/admin/receipt-report" icon={<i className="fa-solid fa-chart-line"></i>} text="Business Intelligence" /></li>
-                                <li><DashboardLink to="/admin/comparison" icon={<i className="fa-solid fa-scale-balanced"></i>} text="Comparison Data" /></li>
                                 <li><DashboardLink to="/data-entry-portal" icon={<i className="fa-solid fa-cloud-arrow-up"></i>} text="Data Entry Workspace" /></li>
                             </ul>
                         </fieldset>

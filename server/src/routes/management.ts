@@ -57,7 +57,163 @@ router.get('/labs', isAuthenticated, (req, res) => {
         res.status(500).json({ message: e.message });
     }
 });
-router.get('/package-lists', isAdmin, (req, res) => res.json(db.prepare('SELECT p.*, (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id) as package_count FROM package_lists p').all()));
+router.get('/package-lists', isAdmin, (req, res) => {
+    try {
+        const lists = db.prepare(`
+            SELECT p.*, 
+                (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id) as package_count,
+                (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id AND (mrp <= 0 OR b2b_price <= 0 OR b2b_price < mrp)) as unconfigured_pricing_count
+            FROM package_lists p
+        `).all() as any[];
+
+        // Fetch all master packages
+        const masterPackages = db.prepare('SELECT id, name, code_name FROM master_packages').all() as any[];
+
+        const enriched = lists.map(list => {
+            const isMother = list.name.includes('Mother Ratelist') || list.name.includes('[M]');
+            let missingMasterPackages: string[] = [];
+
+            if (isMother && masterPackages.length > 0) {
+                // Get all package names and code_names in this list
+                const listPackages = db.prepare('SELECT name, code_name FROM packages WHERE package_list_id = ?').all(list.id) as any[];
+                const listNamesSet = new Set(listPackages.map(p => p.name.trim().toUpperCase()));
+                const listCodesSet = new Set(listPackages.filter(p => p.code_name).map(p => p.code_name.trim().toUpperCase()));
+
+                // For each master package, check if in list
+                masterPackages.forEach(mp => {
+                    const mpName = mp.name.trim().toUpperCase();
+                    if (listNamesSet.has(mpName)) return;
+                    if (mp.code_name && listCodesSet.has(mp.code_name.trim().toUpperCase())) return;
+
+                    // Check aliases
+                    const aliases = db.prepare('SELECT alias_name FROM master_package_aliases WHERE master_package_id = ?').all(mp.id) as any[];
+                    const hasAlias = aliases.some(a => listNamesSet.has(a.alias_name.trim().toUpperCase()));
+                    if (!hasAlias) {
+                        missingMasterPackages.push(mp.name);
+                    }
+                });
+            }
+
+            return {
+                ...list,
+                is_mother_ratelist: isMother,
+                missing_master_count: missingMasterPackages.length,
+                missing_master_packages: missingMasterPackages,
+                has_red_outline: isMother && missingMasterPackages.length > 0,
+                has_yellow_outline: (list.unconfigured_pricing_count || 0) > 0
+            };
+        });
+
+        res.json(enriched);
+    } catch (e: any) {
+        res.status(500).json({ message: e.message });
+    }
+});
+
+// --- MASTER PACKAGES & ALIASES ENDPOINTS ---
+
+router.get('/master-packages', isAuthenticated, (req, res) => {
+    try {
+        const packages = db.prepare(`
+            SELECT mp.*, 
+                (SELECT COUNT(*) FROM master_package_aliases WHERE master_package_id = mp.id) as alias_count,
+                (SELECT GROUP_CONCAT(alias_name, ', ') FROM master_package_aliases WHERE master_package_id = mp.id) as aliases
+            FROM master_packages mp
+            ORDER BY mp.name ASC
+        `).all();
+        res.json(packages);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/master-packages', isAdmin, (req, res) => {
+    try {
+        const { name, code_name } = req.body;
+        if (!name || !name.trim()) return res.status(400).json({ message: "Package name is required" });
+        const cleanName = name.trim().toUpperCase();
+        const now = new Date().toISOString();
+        const stmt = db.prepare('INSERT INTO master_packages (name, code_name, created_at) VALUES (?, ?, ?)');
+        const result = stmt.run(cleanName, code_name ? code_name.trim().toUpperCase() : null, now);
+        res.status(201).json({ id: result.lastInsertRowid, name: cleanName, code_name });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.delete('/master-packages/:id', isAdmin, (req, res) => {
+    try {
+        db.prepare('DELETE FROM master_packages WHERE id = ?').run(req.params.id);
+        res.status(204).end();
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/master-packages/:id/aliases', isAdmin, (req, res) => {
+    try {
+        const { alias_name } = req.body;
+        if (!alias_name || !alias_name.trim()) return res.status(400).json({ message: "Alias name is required" });
+        const cleanAlias = alias_name.trim().toUpperCase();
+        const stmt = db.prepare('INSERT OR IGNORE INTO master_package_aliases (master_package_id, alias_name) VALUES (?, ?)');
+        stmt.run(req.params.id, cleanAlias);
+        res.status(201).json({ message: "Alias linked successfully", alias: cleanAlias });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/package-lists/:id/accept-master-packages', isAdmin, (req, res) => {
+    const listId = parseInt(req.params.id, 10);
+    const { package_names } = req.body;
+    if (!package_names || (Array.isArray(package_names) && package_names.length === 0)) {
+        return res.status(400).json({ message: "No package names specified" });
+    }
+    const names = Array.isArray(package_names) ? package_names : [package_names];
+    try {
+        const tx = db.transaction(() => {
+            const insert = db.prepare('INSERT INTO packages (name, mrp, b2b_price, code_name, package_list_id) VALUES (?, 0, 0, ?, ?)');
+            const selectExisting = db.prepare('SELECT id FROM packages WHERE package_list_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))');
+            const selectMaster = db.prepare('SELECT code_name FROM master_packages WHERE UPPER(TRIM(name)) = UPPER(TRIM(?))');
+            let inserted = 0;
+            names.forEach((rawName: string) => {
+                const name = rawName.trim().toUpperCase();
+                if (!name) return;
+                const existing = selectExisting.get(listId, name);
+                if (!existing) {
+                    const master = selectMaster.get(name) as { code_name?: string } | undefined;
+                    insert.run(name, master?.code_name || null, listId);
+                    inserted++;
+                }
+            });
+            return inserted;
+        });
+        const count = tx();
+        res.json({ message: `Successfully inserted ${count} packages into rate list`, count });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+// --- DOCTOR AUTOCOMPLETE & ADMIN SETTINGS ---
+
+router.get('/doctors', isAuthenticated, (req, res) => {
+    try {
+        const doctors = db.prepare('SELECT name FROM doctors ORDER BY name ASC').all().map((d: any) => d.name);
+        res.json(doctors);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.get('/admin/settings', isAdmin, (req, res) => {
+    try {
+        let settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get();
+        if (!settings) {
+            db.prepare("INSERT INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'Studio Kivx Labs', 'Project LISP')").run();
+            settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get();
+        }
+        res.json(settings);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.put('/admin/settings', isAdmin, (req, res) => {
+    try {
+        const { upi_id, organization_name, lab_name } = req.body;
+        db.prepare('UPDATE admin_settings SET upi_id = ?, organization_name = ?, lab_name = ? WHERE id = 1')
+            .run(upi_id || '', organization_name || '', lab_name || '');
+        res.json({ message: "Settings updated successfully" });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
 router.get('/client-wallets', isAuthenticated, (req, res) => {
     const user = (req.session as any).user as User;
     if (user.role !== 'ADMIN' && !user.master_data_entry) {
@@ -108,27 +264,60 @@ function getReceiptMotherB2BCost(receiptId: number): number {
         const items = db.prepare('SELECT package_name, package_list_id FROM receipt_items WHERE receipt_id = ?').all(receiptId) as any[];
         
         items.forEach(item => {
-            if (!item.package_list_id) return;
-            
-            // 1. Find lab_id for this package_list_id
-            const labMapping = db.prepare('SELECT lab_id FROM lab_package_lists WHERE package_list_id = ?').get(item.package_list_id) as { lab_id: number } | undefined;
-            if (!labMapping) return;
-            
-            // 2. Find the Mother Rate List ID for this lab
-            const labObj = db.prepare('SELECT name FROM labs WHERE id = ?').get(labMapping.lab_id) as { name: string } | undefined;
-            if (!labObj) return;
-            
-            // Note: Since we soft-delete labs by appending [DELETED] ... _timestamp to the lab name,
-            // we search for the Mother Ratelist using that name as well to handle history correctly.
-            const motherListName = `${labObj.name} Mother Ratelist`;
-            const motherList = db.prepare('SELECT id FROM package_lists WHERE name = ?').get(motherListName) as { id: number } | undefined;
-            if (!motherList) return;
-            
-            // 3. Find the B2B price of this package in the Mother Rate List
-            const motherPkg = db.prepare('SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?').get(motherList.id, item.package_name) as { b2b_price: number } | undefined;
-            
-            if (motherPkg) {
-                totalMotherB2B += motherPkg.b2b_price;
+            let motherPrice: number | undefined = undefined;
+
+            if (item.package_list_id) {
+                // 1. Find lab_id for this package_list_id
+                const labMapping = db.prepare('SELECT lab_id FROM lab_package_lists WHERE package_list_id = ?').get(item.package_list_id) as { lab_id: number } | undefined;
+                
+                if (labMapping) {
+                    // 2. Find the Mother Rate List for this lab
+                    const motherList = db.prepare(`
+                        SELECT pl.id, pl.name 
+                        FROM package_lists pl 
+                        JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id 
+                        WHERE lpl.lab_id = ? AND (pl.name LIKE '%Mother Ratelist%' OR pl.name LIKE '%[M]%')
+                        ORDER BY pl.id DESC LIMIT 1
+                    `).get(labMapping.lab_id) as { id: number; name: string } | undefined;
+
+                    if (motherList) {
+                        // 3. Find price in Mother List: exact match first
+                        const motherPkg = db.prepare('SELECT b2b_price FROM packages WHERE package_list_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))')
+                            .get(motherList.id, item.package_name) as { b2b_price: number } | undefined;
+                        if (motherPkg) {
+                            motherPrice = motherPkg.b2b_price;
+                        } else {
+                            // Check alias or code_name match
+                            const aliasPkg = db.prepare(`
+                                SELECT p.b2b_price FROM packages p 
+                                WHERE p.package_list_id = ? AND (
+                                    p.name IN (
+                                        SELECT mp.name FROM master_packages mp 
+                                        JOIN master_package_aliases mpa ON mp.id = mpa.master_package_id 
+                                        WHERE UPPER(TRIM(mpa.alias_name)) = UPPER(TRIM(?))
+                                    )
+                                    OR (p.code_name IS NOT NULL AND p.code_name = (
+                                        SELECT code_name FROM packages WHERE package_list_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?)) LIMIT 1
+                                    ))
+                                ) LIMIT 1
+                            `).get(motherList.id, item.package_name, item.package_list_id, item.package_name) as { b2b_price: number } | undefined;
+                            if (aliasPkg) {
+                                motherPrice = aliasPkg.b2b_price;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: If not found in Mother List, check the item's rate list price
+            if (motherPrice === undefined && item.package_list_id) {
+                const itemPkg = db.prepare('SELECT b2b_price FROM packages WHERE package_list_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))')
+                    .get(item.package_list_id, item.package_name) as { b2b_price: number } | undefined;
+                if (itemPkg) motherPrice = itemPkg.b2b_price;
+            }
+
+            if (typeof motherPrice === 'number') {
+                totalMotherB2B += motherPrice;
             }
         });
     } catch (err) {
@@ -211,6 +400,9 @@ router.get('/receipts', isAuthenticated, (req, res) => {
                 `).get(r.id) as { lab_id: number; lab_name: string } | undefined;
             }
 
+            const receiptItems = db.prepare('SELECT ri.id, ri.package_name, ri.mrp, ri.discount_percentage, ri.package_list_id FROM receipt_items ri WHERE ri.receipt_id = ?').all(r.id) as any[];
+            const testNames = receiptItems.map(i => i.package_name).join(', ');
+
             return {
                 id: r.id,
                 display_doc_id: `RCPT-${String(r.id).padStart(6, '0')}`,
@@ -229,7 +421,9 @@ router.get('/receipts', isAuthenticated, (req, res) => {
                 created_by_user_id: r.created_by_user_id,
                 referred_by: r.referred_by || 'Self',
                 num_tests: r.num_tests || 0,
-                lab_name: labInfo?.lab_name || 'N/A'
+                lab_name: labInfo?.lab_name || 'N/A',
+                test_names: testNames,
+                items: receiptItems
             };
         });
         res.json(formatted);
@@ -505,22 +699,32 @@ router.delete('/package-lists/:id', isAdmin, (req, res) => {
 router.post('/package-lists/:id/upload', isAdmin, (req, res) => {
     const listId = req.params.id;
     const packages = req.body.packages as any[];
+    const mode = req.body.mode || 'OVERWRITE'; // Default to OVERWRITE per Tathagata's request
     const transaction = db.transaction(() => {
         let inserted = 0, updated = 0;
-        const selectPkg = db.prepare('SELECT id FROM packages WHERE package_list_id = ? AND name = ?');
-        const updatePkg = db.prepare('UPDATE packages SET mrp = ?, b2b_price = ?, code_name = ? WHERE id = ?');
-        const insertPkg = db.prepare('INSERT INTO packages (name, mrp, b2b_price, code_name, package_list_id) VALUES (?, ?, ?, ?, ?)');
-        packages.forEach(pkg => {
-            const existing = selectPkg.get(listId, pkg.name) as Package;
-            const code = pkg.code_name || null;
-            if (existing) {
-                updatePkg.run(pkg.mrp, pkg.b2b_price, code, existing.id);
-                updated++;
-            } else {
-                insertPkg.run(pkg.name, pkg.mrp, pkg.b2b_price, code, listId);
+        if (mode === 'OVERWRITE') {
+            db.prepare('DELETE FROM packages WHERE package_list_id = ?').run(listId);
+            const insertPkg = db.prepare('INSERT INTO packages (name, mrp, b2b_price, code_name, package_list_id) VALUES (?, ?, ?, ?, ?)');
+            packages.forEach(pkg => {
+                insertPkg.run(pkg.name, pkg.mrp, pkg.b2b_price, pkg.code_name || null, listId);
                 inserted++;
-            }
-        });
+            });
+        } else {
+            const selectPkg = db.prepare('SELECT id FROM packages WHERE package_list_id = ? AND name = ?');
+            const updatePkg = db.prepare('UPDATE packages SET mrp = ?, b2b_price = ?, code_name = ? WHERE id = ?');
+            const insertPkg = db.prepare('INSERT INTO packages (name, mrp, b2b_price, code_name, package_list_id) VALUES (?, ?, ?, ?, ?)');
+            packages.forEach(pkg => {
+                const existing = selectPkg.get(listId, pkg.name) as Package;
+                const code = pkg.code_name || null;
+                if (existing) {
+                    updatePkg.run(pkg.mrp, pkg.b2b_price, code, existing.id);
+                    updated++;
+                } else {
+                    insertPkg.run(pkg.name, pkg.mrp, pkg.b2b_price, code, listId);
+                    inserted++;
+                }
+            });
+        }
         return { inserted, updated };
     });
     try {
@@ -994,11 +1198,84 @@ router.post('/comparison/upload', isAdmin, (req, res, next) => {
 
 router.get('/comparison/data', isAuthenticated, (req, res) => {
     try {
-        const tests = db.prepare('SELECT * FROM comparison_tests ORDER BY name ASC').all();
-        const labs = db.prepare('SELECT * FROM comparison_labs ORDER BY id ASC').all();
-        const prices = db.prepare('SELECT * FROM comparison_prices').all();
+        const masterPackages = db.prepare('SELECT id, name, code_name FROM master_packages ORDER BY name ASC').all() as any[];
+        const labs = db.prepare('SELECT id, name FROM labs WHERE is_deleted = 0 ORDER BY id ASC').all() as any[];
 
-        res.json({ tests, labs, prices });
+        // Preload mother lists for all labs
+        const labMotherLists: { [labId: number]: number } = {};
+        labs.forEach(lab => {
+            const mother = db.prepare(`
+                SELECT pl.id FROM package_lists pl
+                JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id
+                WHERE lpl.lab_id = ? AND (pl.name LIKE '%Mother Ratelist%' OR pl.name LIKE '%[M]%')
+                ORDER BY pl.id DESC LIMIT 1
+            `).get(lab.id) as { id: number } | undefined;
+            if (mother) labMotherLists[lab.id] = mother.id;
+        });
+
+        // Preload all master package aliases
+        const allAliases = db.prepare('SELECT master_package_id, alias_name FROM master_package_aliases').all() as any[];
+        const aliasMap: { [mpId: number]: string[] } = {};
+        allAliases.forEach(a => {
+            if (!aliasMap[a.master_package_id]) aliasMap[a.master_package_id] = [];
+            aliasMap[a.master_package_id].push(a.alias_name.trim().toUpperCase());
+        });
+
+        // Preload packages for all mother lists
+        const motherPackagesByList: { [listId: number]: any[] } = {};
+        Object.values(labMotherLists).forEach(listId => {
+            motherPackagesByList[listId] = db.prepare('SELECT id, name, mrp, b2b_price, code_name FROM packages WHERE package_list_id = ?').all(listId) as any[];
+        });
+
+        const prices: any[] = [];
+
+        labs.forEach(lab => {
+            const motherListId = labMotherLists[lab.id];
+            if (!motherListId) return;
+
+            const listPkgs = motherPackagesByList[motherListId] || [];
+            const pkgByName: { [name: string]: any } = {};
+            const pkgByCode: { [code: string]: any } = {};
+
+            listPkgs.forEach(p => {
+                pkgByName[p.name.trim().toUpperCase()] = p;
+                if (p.code_name) pkgByCode[p.code_name.trim().toUpperCase()] = p;
+            });
+
+            masterPackages.forEach(mp => {
+                const mpName = mp.name.trim().toUpperCase();
+                let matchedPkg = pkgByName[mpName];
+
+                if (!matchedPkg && mp.code_name) {
+                    matchedPkg = pkgByCode[mp.code_name.trim().toUpperCase()];
+                }
+
+                if (!matchedPkg) {
+                    const aliases = aliasMap[mp.id] || [];
+                    for (const alias of aliases) {
+                        if (pkgByName[alias]) {
+                            matchedPkg = pkgByName[alias];
+                            break;
+                        }
+                    }
+                }
+
+                if (matchedPkg && matchedPkg.b2b_price > 0) {
+                    prices.push({
+                        test_id: mp.id,
+                        lab_id: lab.id,
+                        price: matchedPkg.b2b_price,
+                        mrp: matchedPkg.mrp
+                    });
+                }
+            });
+        });
+
+        res.json({
+            tests: masterPackages,
+            labs,
+            prices
+        });
     } catch (e: any) {
         res.status(500).json({ message: e.message });
     }

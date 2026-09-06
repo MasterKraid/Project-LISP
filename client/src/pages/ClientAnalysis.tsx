@@ -2,6 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { apiService } from '../services/api';
 import PageHeader from '../components/PageHeader';
 
+interface DailyStat {
+  count: number;
+  spend: number;
+  profit: number;
+}
+
 interface ClientStats {
   total_orders: number;
   total_spend: number;
@@ -12,6 +18,9 @@ interface ClientStats {
   current_month_b2b: number;
   current_month_patients: number;
   last_month_b2b: number;
+  today?: DailyStat;
+  yesterday?: DailyStat;
+  day_before?: DailyStat;
 }
 
 interface TrendMonth {
@@ -245,8 +254,56 @@ const ClientAnalysis: React.FC = () => {
               </div>
             </div>
 
+            {/* Daily Activity Cards: Today, Yesterday, Day Before */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Today</span>
+                  <div className="text-lg font-black text-slate-800 mt-1">
+                    ₹{(stats?.today?.spend || 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {stats?.today?.count || 0} tests • Profit: <span className="text-emerald-600 font-bold">₹{(stats?.today?.profit || 0).toFixed(0)}</span>
+                  </div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm font-bold">
+                  <i className="fa-solid fa-calendar-day"></i>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Yesterday</span>
+                  <div className="text-lg font-black text-slate-800 mt-1">
+                    ₹{(stats?.yesterday?.spend || 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {stats?.yesterday?.count || 0} tests • Profit: <span className="text-emerald-600 font-bold">₹{(stats?.yesterday?.profit || 0).toFixed(0)}</span>
+                  </div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center text-sm font-bold">
+                  <i className="fa-solid fa-clock-rotate-left"></i>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-sm flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest block">Day Before Yesterday</span>
+                  <div className="text-lg font-black text-slate-800 mt-1">
+                    ₹{(stats?.day_before?.spend || 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {stats?.day_before?.count || 0} tests • Profit: <span className="text-emerald-600 font-bold">₹{(stats?.day_before?.profit || 0).toFixed(0)}</span>
+                  </div>
+                </div>
+                <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-600 flex items-center justify-center text-sm font-bold">
+                  <i className="fa-solid fa-backward-step"></i>
+                </div>
+              </div>
+            </div>
+
             {/* Visual Charts & Top Tests Grid */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-4">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-2">
               {/* Left Column: Volume Trend Chart */}
               <fieldset className="lg:col-span-7 border-2 border-gray-300 p-4 md:p-6 rounded-xl bg-white shadow-sm flex flex-col justify-between min-w-0">
                 <legend className="px-3 flex items-center gap-2">

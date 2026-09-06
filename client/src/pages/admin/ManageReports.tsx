@@ -19,6 +19,7 @@ const ManageReports: React.FC = () => {
         rect: DOMRect;
         clientName: string;
         uid: string | number;
+        testNames?: string;
     } | null>(null);
 
     useEffect(() => {
@@ -566,10 +567,11 @@ const ManageReports: React.FC = () => {
                                         </div>
                                     ) : (
                                         <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-sm max-h-[50vh] overflow-y-auto custom-scrollbar-minimal">
-                                            <table className="w-full min-w-[600px] text-left border-collapse">
+                                            <table className="w-full min-w-[750px] text-left border-collapse">
                                                 <thead className="bg-slate-50/80 sticky top-0 backdrop-blur-sm z-10">
                                                     <tr className="border-b border-slate-200">
                                                         <th className="p-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest pl-4">Patient Name</th>
+                                                        <th className="p-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Client Name</th>
                                                         <th className="p-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Receipt ID</th>
                                                         <th className="p-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Status</th>
                                                         <th className="p-3 text-right pr-4 w-24">Action</th>
@@ -605,7 +607,8 @@ const ManageReports: React.FC = () => {
                                                                                 setHoveredTooltip({
                                                                                     rect,
                                                                                     clientName: rcpt.created_by_user || 'Direct Billing',
-                                                                                    uid: rcpt.acting_as_client_id || rcpt.created_by_user_id || 'N/A'
+                                                                                    uid: rcpt.acting_as_client_id || rcpt.created_by_user_id || 'N/A',
+                                                                                    testNames: rcpt.test_names || undefined
                                                                                 });
                                                                             }}
                                                                             onMouseLeave={() => setHoveredTooltip(null)}
@@ -615,6 +618,19 @@ const ManageReports: React.FC = () => {
                                                                         </span>
                                                                     </div>
                                                                     <div className="text-[9px] text-slate-400 font-mono">{rcpt.display_customer_id}</div>
+                                                                </td>
+                                                                <td className={`p-3 ${isSelected ? 'bg-indigo-50/20' : ''}`}>
+                                                                    <div className="font-bold text-slate-700 truncate max-w-[150px]" title={rcpt.created_by_user}>
+                                                                        {rcpt.created_by_user || 'Walk-in'}
+                                                                    </div>
+                                                                    {rcpt.test_names && (
+                                                                        <div 
+                                                                            className="text-[9px] text-indigo-600 font-medium truncate max-w-[150px] cursor-help"
+                                                                            title={rcpt.test_names}
+                                                                        >
+                                                                            {rcpt.test_names}
+                                                                        </div>
+                                                                    )}
                                                                 </td>
                                                                 <td className={`p-3 font-mono font-medium text-slate-650 ${isSelected ? 'bg-indigo-50/20' : ''}`}>{rcpt.display_doc_id}</td>
                                                                 <td className={`p-3 ${isSelected ? 'bg-indigo-50/20' : ''}`}>
@@ -645,7 +661,7 @@ const ManageReports: React.FC = () => {
                                                     })}
                                                     {filteredReceipts.length === 0 && (
                                                          <tr>
-                                                             <td colSpan={4} className="p-10 text-center text-slate-400 italic font-bold text-xs uppercase tracking-wider">
+                                                             <td colSpan={5} className="p-10 text-center text-slate-400 italic font-bold text-xs uppercase tracking-wider">
                                                                  No receipts found matching the filters.
                                                              </td>
                                                          </tr>
@@ -764,9 +780,10 @@ const ManageReports: React.FC = () => {
                     style={{
                         top: `${hoveredTooltip.rect.top - 18}px`,
                         left: `${hoveredTooltip.rect.left}px`,
-                        transform: 'translateY(-100%)'
+                        transform: 'translateY(-100%)',
+                        maxWidth: '340px'
                     }}
-                    className="fixed z-[999999] pointer-events-none bg-slate-950/95 backdrop-blur-md text-white rounded-2xl p-3 px-3.5 shadow-2xl border-2 border-slate-700 whitespace-nowrap animate-in fade-in zoom-in-95 duration-100"
+                    className="fixed z-[999999] pointer-events-none bg-slate-950/95 backdrop-blur-md text-white rounded-2xl p-3 px-3.5 shadow-2xl border-2 border-slate-700 animate-in fade-in zoom-in-95 duration-100"
                 >
                     <div className="text-[12px] font-bold text-white flex items-center gap-1.5 tracking-wide">
                         <i className="fa-solid fa-user-tie text-indigo-400 text-[10px]"></i>
@@ -776,6 +793,16 @@ const ManageReports: React.FC = () => {
                         <span className="text-slate-400 text-[9px] uppercase font-sans tracking-wider font-extrabold">Client UID:</span>
                         <span className="text-emerald-400 font-black">{hoveredTooltip.uid}</span>
                     </div>
+                    {hoveredTooltip.testNames && (
+                        <div className="mt-2 pt-1.5 border-t border-slate-800 text-[10px] text-slate-300">
+                            <span className="text-[9px] uppercase font-sans tracking-wider font-extrabold text-amber-400 block mb-0.5">
+                                <i className="fa-solid fa-flask-vial mr-1"></i> Ordered Tests:
+                            </span>
+                            <div className="font-sans leading-relaxed text-slate-200 whitespace-normal">
+                                {hoveredTooltip.testNames}
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
-import { Lab, PackageList, Package, User } from '../../types';
+import { Lab, PackageList, Package, User, MasterPackage } from '../../types';
 import SearchableDropdown from '../../components/SearchableDropdown';
 import { RatelistLinkedClientsTooltip, RatelistMarkupTagTooltip } from '../../components/RatelistTooltips';
 
@@ -12,6 +12,19 @@ const ManageLabs: React.FC = () => {
     const [allLists, setAllLists] = useState<PackageList[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [users, setUsers] = useState<User[]>([]);
+
+    // Master Ratelist & Canonical Directory States
+    const [masterPackages, setMasterPackages] = useState<MasterPackage[]>([]);
+    const [isMasterOpen, setIsMasterOpen] = useState(false);
+    const [masterSearch, setMasterSearch] = useState('');
+    const [newMasterName, setNewMasterName] = useState('');
+    const [newMasterCode, setNewMasterCode] = useState('');
+    const [aliasModalPkg, setAliasModalPkg] = useState<MasterPackage | null>(null);
+    const [newAliasName, setNewAliasName] = useState('');
+
+    // Excel Upload Mode Modal
+    const [pendingExcelUpload, setPendingExcelUpload] = useState<{ listId: number; json: any[]; filename: string } | null>(null);
+    const [excelUploadMode, setExcelUploadMode] = useState<'OVERWRITE' | 'APPEND'>('OVERWRITE');
 
     const parseMarkupDiscount = (name: string) => {
         let match = name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i);
@@ -91,14 +104,16 @@ const ManageLabs: React.FC = () => {
     const fetchData = async () => {
         setIsLoading(true);
         try {
-            const [labsData, listsData, usersData] = await Promise.all([
+            const [labsData, listsData, usersData, masterData] = await Promise.all([
                 apiService.getLabs(),
                 apiService.getPackageLists(),
-                apiService.getUsers()
+                apiService.getUsers(),
+                apiService.getMasterPackages()
             ]);
             setLabs(labsData);
             setAllLists(listsData.filter((l: any) => !l.name.startsWith('[DELETED]')));
             setUsers(usersData);
+            setMasterPackages(masterData);
         } catch (error) {
             console.error("Failed to fetch lab data", error);
         } finally {
@@ -259,6 +274,72 @@ const ManageLabs: React.FC = () => {
     };
 
     // ----------------------------------------------------
+    // Master Packages & Aliases Handlers
+    // ----------------------------------------------------
+    const filteredMasterPackages = React.useMemo(() => {
+        const q = masterSearch.toLowerCase().trim();
+        if (!q) return masterPackages;
+        return masterPackages.filter(p =>
+            p.name.toLowerCase().includes(q) ||
+            (p.code_name && p.code_name.toLowerCase().includes(q)) ||
+            (p.aliases && p.aliases.toLowerCase().includes(q))
+        );
+    }, [masterPackages, masterSearch]);
+
+    const handleAddMasterPackage = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newMasterName.trim()) return;
+        try {
+            await apiService.createMasterPackage(newMasterName.trim(), newMasterCode.trim() || undefined);
+            setNewMasterName('');
+            setNewMasterCode('');
+            fetchData();
+        } catch (err: any) {
+            alert("Failed to add master package: " + (err.message || err));
+        }
+    };
+
+    const handleDeleteMasterPackage = async (id: number) => {
+        if (window.confirm("Are you sure you want to remove this package from the Master Ratelist?")) {
+            try {
+                await apiService.deleteMasterPackage(id);
+                fetchData();
+            } catch (err: any) {
+                alert("Failed to delete master package: " + (err.message || err));
+            }
+        }
+    };
+
+    const handleAddAlias = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!aliasModalPkg || !newAliasName.trim()) return;
+        try {
+            await apiService.addMasterPackageAlias(aliasModalPkg.id, newAliasName.trim());
+            setNewAliasName('');
+            setAliasModalPkg(null);
+            fetchData();
+        } catch (err: any) {
+            alert("Failed to add alias: " + (err.message || err));
+        }
+    };
+
+    const handleAcceptMissingMaster = async (missingNames: string[]) => {
+        if (!editingList || missingNames.length === 0) return;
+        try {
+            await apiService.acceptMasterPackages(editingList.id, missingNames);
+            const pkgs = await apiService.getPackagesForList(editingList.id);
+            setPackages(pkgs);
+            setOriginalPackages(JSON.parse(JSON.stringify(pkgs)));
+            const updatedLists = await apiService.getPackageLists();
+            setAllLists(updatedLists.filter((l: any) => !l.name.startsWith('[DELETED]')));
+            const updatedEditingList = updatedLists.find((l: any) => l.id === editingList.id);
+            if (updatedEditingList) setEditingList(updatedEditingList);
+        } catch (err: any) {
+            alert("Failed to accept master packages: " + (err.message || err));
+        }
+    };
+
+    // ----------------------------------------------------
     // XLSX Upload Handler
     // ----------------------------------------------------
     const handleFileUpload = (listId: number, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -270,6 +351,7 @@ const ManageLabs: React.FC = () => {
         const file = e.target.files?.[0];
         if (!file) return;
 
+        const filename = file.name;
         const reader = new FileReader();
         reader.onload = async (event) => {
             try {
@@ -304,16 +386,40 @@ const ManageLabs: React.FC = () => {
                     throw new Error(`Invalid Excel format. Header row must contain required columns: code_name, name, mrp, b2b_price.`);
                 }
 
-                const { inserted, updated } = await apiService.uploadPackages(listId, json);
-                alert(`Import complete! ${inserted} new packages added, ${updated} packages updated.`);
-                fetchData();
+                // Prompt user with modal for Overwrite vs Append
+                setPendingExcelUpload({ listId, json, filename });
+                setExcelUploadMode('OVERWRITE');
             } catch (error) {
-                alert(`Error importing Excel file: ${error}`);
+                alert(`Error reading Excel file: ${error}`);
             } finally {
                 e.target.value = '';
             }
         };
         reader.readAsArrayBuffer(file);
+    };
+
+    const handleConfirmExcelUpload = async () => {
+        if (!pendingExcelUpload) return;
+        try {
+            setIsLoading(true);
+            const { inserted, updated } = await apiService.uploadPackages(
+                pendingExcelUpload.listId,
+                pendingExcelUpload.json,
+                excelUploadMode
+            );
+            alert(`Import complete (${excelUploadMode === 'OVERWRITE' ? 'Overwrite' : 'Append'})! ${inserted} packages added, ${updated} packages updated.`);
+            setPendingExcelUpload(null);
+            fetchData();
+            if (isInventoryOpen && editingList?.id === pendingExcelUpload.listId) {
+                const pkgs = await apiService.getPackagesForList(pendingExcelUpload.listId);
+                setPackages(pkgs);
+                setOriginalPackages(JSON.parse(JSON.stringify(pkgs)));
+            }
+        } catch (error: any) {
+            alert(`Error importing Excel file: ${error.message || error}`);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     // ----------------------------------------------------
@@ -489,6 +595,131 @@ const ManageLabs: React.FC = () => {
             <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-gray-200">
                 <PageHeader title="Labs & Database Overhaul" showActingAs={false} />
 
+                {/* Master Ratelist & Canonical Directory Expandable Section */}
+                <fieldset className="border-2 border-indigo-200 bg-indigo-50/20 p-4 md:p-6 rounded-xl mb-8 transition-all">
+                    <legend className="px-3 flex items-center justify-between cursor-pointer" onClick={() => setIsMasterOpen(!isMasterOpen)}>
+                        <div className="flex items-center gap-2">
+                            <div className="w-7 h-7 rounded bg-indigo-600 flex items-center justify-center text-white shadow-sm">
+                                <i className="fa-solid fa-book-medical text-xs"></i>
+                            </div>
+                            <span className="text-base md:text-lg font-bold text-indigo-950 uppercase tracking-tight md:tracking-normal">
+                                Master Ratelist & Canonical Directory
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                {masterPackages.length} Master Tests
+                            </span>
+                        </div>
+                        <button
+                            type="button"
+                            className="ml-4 w-7 h-7 rounded-full bg-indigo-100 text-indigo-600 hover:bg-indigo-200 flex items-center justify-center text-xs transition-transform"
+                        >
+                            <i className={`fa-solid ${isMasterOpen ? 'fa-chevron-up' : 'fa-chevron-down'}`}></i>
+                        </button>
+                    </legend>
+
+                    {isMasterOpen && (
+                        <div className="space-y-4 pt-2 animate-in fade-in duration-150">
+                            <p className="text-xs text-indigo-800/80 leading-relaxed">
+                                The Master Ratelist defines the universal set of diagnostic tests. All Mother Ratelists shadow-pull from here. Mother Ratelists missing tests will display a Red Outline with capped tooltip.
+                            </p>
+
+                            {/* Add Master Test Form */}
+                            <form onSubmit={handleAddMasterPackage} className="flex flex-col sm:flex-row items-end gap-3 bg-white p-3.5 rounded-lg border border-indigo-100 shadow-sm">
+                                <div className="w-full sm:w-48 space-y-1">
+                                    <label className="text-[10px] font-bold text-gray-400 uppercase">Test Code (Optional)</label>
+                                    <input
+                                        type="text"
+                                        value={newMasterCode}
+                                        onChange={e => setNewMasterCode(e.target.value)}
+                                        placeholder="e.g. CBC, LFT"
+                                        className="w-full p-2 border border-gray-200 rounded-lg text-xs font-mono outline-none focus:ring-2 focus:ring-indigo-100"
+                                    />
+                                </div>
+                                <div className="flex-1 w-full space-y-1">
+                                    <label className="text-[10px] font-bold text-gray-400 uppercase">Canonical Test Name</label>
+                                    <input
+                                        type="text"
+                                        value={newMasterName}
+                                        onChange={e => setNewMasterName(e.target.value)}
+                                        placeholder="e.g. COMPLETE BLOOD COUNT (CBC)"
+                                        required
+                                        className="w-full p-2 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-indigo-100"
+                                    />
+                                </div>
+                                <button
+                                    type="submit"
+                                    className="w-full sm:w-auto px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg text-xs shadow-sm flex items-center justify-center gap-1.5 h-[36px]"
+                                >
+                                    <i className="fa-solid fa-plus-circle"></i> Add Master Test
+                                </button>
+                            </form>
+
+                            {/* Master Tests Search & Grid */}
+                            <div className="bg-white p-4 rounded-xl border border-indigo-100 shadow-sm space-y-3">
+                                <div className="flex items-center justify-between gap-4">
+                                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+                                        Directory ({filteredMasterPackages.length} of {masterPackages.length})
+                                    </span>
+                                    <div className="relative w-full sm:w-72">
+                                        <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                                        <input
+                                            type="text"
+                                            value={masterSearch}
+                                            onChange={e => setMasterSearch(e.target.value)}
+                                            placeholder="Search master tests or aliases..."
+                                            className="w-full pl-9 pr-3 py-1.5 border border-gray-200 rounded-lg bg-gray-50/50 text-xs focus:bg-white outline-none focus:ring-2 focus:ring-indigo-100"
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="max-h-72 overflow-y-auto divide-y divide-gray-100 custom-scrollbar-minimal pr-1 border border-gray-100 rounded-lg">
+                                    {filteredMasterPackages.map(mp => (
+                                        <div key={mp.id} className="p-2.5 flex items-center justify-between gap-3 hover:bg-indigo-50/30 transition-colors">
+                                            <div className="min-w-0 flex-1">
+                                                <div className="flex items-center gap-2">
+                                                    {mp.code_name && (
+                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-100 text-indigo-700 border border-indigo-200">
+                                                            {mp.code_name}
+                                                        </span>
+                                                    )}
+                                                    <span className="text-xs font-bold text-gray-800 truncate">{mp.name}</span>
+                                                </div>
+                                                {mp.aliases && (
+                                                    <div className="text-[10px] text-gray-400 mt-0.5 truncate flex items-center gap-1">
+                                                        <span className="font-semibold text-indigo-600">Aliases:</span> {mp.aliases}
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setAliasModalPkg(mp)}
+                                                    className="px-2 py-1 bg-indigo-50 hover:bg-indigo-600 text-indigo-700 hover:text-white border border-indigo-200 rounded text-[10px] font-bold transition-all shadow-sm flex items-center gap-1"
+                                                >
+                                                    <i className="fa-solid fa-tags text-[9px]"></i> + Alias
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDeleteMasterPackage(mp.id)}
+                                                    className="w-6 h-6 flex items-center justify-center text-gray-300 hover:text-red-600 transition-colors"
+                                                    title="Delete Master Test"
+                                                >
+                                                    <i className="fa-solid fa-trash-can text-xs"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    {filteredMasterPackages.length === 0 && (
+                                        <div className="p-6 text-center text-xs text-gray-400 italic">
+                                            No master packages found matching "{masterSearch}"
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </fieldset>
+
                 {/* Add New Laboratory Form */}
                 <fieldset className="border-2 border-gray-300 p-4 md:p-6 rounded-xl mb-10">
                     <legend className="px-3 flex items-center gap-2">
@@ -640,17 +871,27 @@ const ManageLabs: React.FC = () => {
                                                                         return 0;
                                                                     });
                                                                     return sortedLists.map(list => {
-                                                                         const isMotherRatelist = list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`;
+                                                                         const isMotherRatelist = list.is_mother_ratelist || (list.name.endsWith(' Mother Ratelist') && list.name === `${lab.name} Mother Ratelist`);
                                                                          const parsedInfo = parseMarkupDiscount(list.name);
                                                                          const cleanName = getCleanName(list.name);
+                                                                         const hasRedOutline = !!list.has_red_outline;
+                                                                         const hasYellowOutline = !!list.has_yellow_outline;
+
+                                                                         let borderClass = 'bg-white border-gray-200 shadow-sm';
+                                                                         if (hasRedOutline && hasYellowOutline) {
+                                                                             borderClass = 'bg-red-50/15 border-2 border-red-500 ring-2 ring-yellow-400 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
+                                                                         } else if (hasRedOutline) {
+                                                                             borderClass = 'bg-red-50/20 border-2 border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.25)]';
+                                                                         } else if (hasYellowOutline) {
+                                                                             borderClass = 'bg-yellow-50/30 border-2 border-yellow-400 ring-2 ring-yellow-400/50 shadow-[0_0_15px_rgba(234,179,8,0.25)]';
+                                                                         } else if (isMotherRatelist) {
+                                                                             borderClass = 'bg-blue-50/50 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.22)]';
+                                                                         }
+
                                                                         return (
                                                                             <div 
                                                                                 key={list.id} 
-                                                                                className={`p-4 rounded-xl border flex flex-col justify-between transition-all duration-200 ${
-                                                                                    isMotherRatelist 
-                                                                                        ? 'bg-blue-50/50 border-blue-400 shadow-[0_0_15px_rgba(59,130,246,0.22)]' 
-                                                                                        : 'bg-white border-gray-200 shadow-sm'
-                                                                                }`}
+                                                                                className={`p-4 rounded-xl border flex flex-col justify-between transition-all duration-200 relative ${borderClass}`}
                                                                             >
                                                                                 <div>
                                                                                     <div className="flex justify-between items-start">
@@ -676,7 +917,7 @@ const ManageLabs: React.FC = () => {
                                                                                                     <span className="truncate cursor-help border-b border-dashed border-gray-400" title={cleanName}>{cleanName}</span>
                                                                                                 </RatelistLinkedClientsTooltip>
                                                                                                  {parsedInfo && (() => {
-                                                                                                    const motherList = labLists.find(pl => pl.name.endsWith(' Mother Ratelist') && pl.name.startsWith(lab.name));
+                                                                                                    const motherList = labLists.find(pl => (pl.name.endsWith(' Mother Ratelist') || pl.name.includes('[M]')) && pl.name.startsWith(lab.name));
                                                                                                     const fallbackMotherName = motherList 
                                                                                                         ? motherList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() 
                                                                                                         : `${lab.name} Mother Ratelist`;
@@ -693,6 +934,44 @@ const ManageLabs: React.FC = () => {
                                                                                                     <span className="px-1.5 py-0.5 rounded-full text-[7.5px] font-black bg-blue-100 text-blue-800 border border-blue-200 uppercase shrink-0">
                                                                                                         Mother
                                                                                                     </span>
+                                                                                                )}
+                                                                                                {hasRedOutline && (
+                                                                                                    <div className="relative group/red inline-block">
+                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-red-100 text-red-700 border border-red-300 uppercase flex items-center gap-1 shrink-0 animate-pulse">
+                                                                                                            <i className="fa-solid fa-triangle-exclamation text-[9px]"></i>
+                                                                                                            {list.missing_master_count} Missing
+                                                                                                        </span>
+                                                                                                        <div className="absolute left-0 top-full mt-1.5 w-60 max-h-44 overflow-y-auto bg-gray-900 text-white text-[11px] rounded-lg p-2.5 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/red:opacity-100 transition-opacity">
+                                                                                                            <div className="font-bold text-red-300 pb-1 border-b border-gray-700 mb-1 flex items-center justify-between">
+                                                                                                                <span>Missing Master Tests:</span>
+                                                                                                                <span className="text-[9px] bg-red-950 px-1 py-0.5 rounded text-red-200">{list.missing_master_count}</span>
+                                                                                                            </div>
+                                                                                                            <ul className="space-y-0.5 text-gray-300">
+                                                                                                                {(list.missing_master_packages || []).slice(0, 5).map((mp, i) => (
+                                                                                                                    <li key={i} className="truncate">• {mp}</li>
+                                                                                                                ))}
+                                                                                                                {(list.missing_master_packages?.length || 0) > 5 && (
+                                                                                                                    <li className="text-[10px] text-gray-400 italic pt-1 border-t border-gray-800">
+                                                                                                                        +{(list.missing_master_packages?.length || 0) - 5} more missing
+                                                                                                                    </li>
+                                                                                                                )}
+                                                                                                            </ul>
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                )}
+                                                                                                {hasYellowOutline && (
+                                                                                                    <div className="relative group/yellow inline-block">
+                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-amber-100 text-amber-800 border border-amber-300 uppercase flex items-center gap-1 shrink-0">
+                                                                                                            <i className="fa-solid fa-circle-exclamation text-[9px]"></i>
+                                                                                                            {list.unconfigured_pricing_count || 0} Needs Price
+                                                                                                        </span>
+                                                                                                        <div className="absolute left-0 top-full mt-1.5 w-56 bg-gray-900 text-white text-[11px] rounded-lg p-2 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/yellow:opacity-100 transition-opacity">
+                                                                                                            <span className="font-bold text-amber-300 block mb-0.5">Pricing Alert</span>
+                                                                                                            <span className="text-gray-300 leading-tight block">
+                                                                                                                {list.unconfigured_pricing_count || 0} tests have unconfigured pricing (MRP ≤ 0, B2B ≤ 0, or B2B &lt; MRP).
+                                                                                                            </span>
+                                                                                                        </div>
+                                                                                                    </div>
                                                                                                 )}
                                                                                                 <button 
                                                                                                     onClick={() => {
@@ -937,6 +1216,30 @@ const ManageLabs: React.FC = () => {
                             </button>
                         </form>
 
+                        {/* Missing Master Packages Alert Banner */}
+                        {editingList.missing_master_packages && editingList.missing_master_packages.length > 0 && (
+                            <div className="mb-4 p-3.5 bg-red-50 border border-red-200 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+                                <div className="flex items-center gap-2.5">
+                                    <i className="fa-solid fa-triangle-exclamation text-red-600 text-base shrink-0"></i>
+                                    <div>
+                                        <span className="text-xs font-bold text-red-900 block">
+                                            {editingList.missing_master_packages.length} Master Packages Missing
+                                        </span>
+                                        <span className="text-[11px] text-red-700">
+                                            This Mother Ratelist is missing tests from the universal Master Ratelist directory.
+                                        </span>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => handleAcceptMissingMaster(editingList.missing_master_packages || [])}
+                                    className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg shadow-sm flex items-center gap-1.5 shrink-0 transition-all"
+                                >
+                                    <i className="fa-solid fa-cloud-arrow-down"></i> Insert All ({editingList.missing_master_packages.length})
+                                </button>
+                            </div>
+                        )}
+
                         {/* Search packages inside modal */}
                         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4">
                             <div className="flex items-center gap-2">
@@ -968,44 +1271,91 @@ const ManageLabs: React.FC = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-50">
-                                    {filteredInventoryPackages.map(pkg => (
-                                        <tr key={pkg.id} className="hover:bg-gray-50/50 transition-colors group">
-                                            <td className="p-1 pl-4 w-36">
-                                                <input
-                                                    value={pkg.code_name || ''}
-                                                    onChange={e => handlePackageChange(pkg.id, 'code_name', e.target.value)}
-                                                    placeholder="N/A"
-                                                    className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm font-mono animate-none"
-                                                />
-                                            </td>
-                                            <td className="p-1">
-                                                <input value={pkg.name} onChange={e => handlePackageChange(pkg.id, 'name', e.target.value)} className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm" />
-                                            </td>
-                                            <td className="p-1">
-                                                <div className="relative">
-                                                    <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-gray-300 text-[10px]">₹</span>
-                                                    <input type="number" value={pkg.mrp} onChange={e => handlePackageChange(pkg.id, 'mrp', Number(e.target.value))} className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-gray-600 text-sm" />
-                                                </div>
-                                            </td>
-                                            <td className="p-1">
-                                                <div className="relative font-bold">
-                                                    <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-blue-200 text-[10px]">₹</span>
-                                                    <input type="number" value={pkg.b2b_price} onChange={e => handlePackageChange(pkg.id, 'b2b_price', Number(e.target.value))} className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-blue-700 font-bold text-sm" />
-                                                </div>
-                                            </td>
-                                            <td className="p-1 text-center">
-                                                <div className="flex items-center gap-1.5 justify-center">
-                                                    <button onClick={() => handleSavePackage(pkg)} className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-blue-600 hover:text-white rounded border border-gray-100 transition-all shrink-0" title="Save Product">
-                                                        <i className="fa-solid fa-floppy-disk text-[10px]"></i>
-                                                    </button>
-                                                    <button onClick={() => handleDeletePackage(pkg.id)} className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-red-600 hover:text-white rounded border border-gray-100 transition-all shrink-0 animate-none" title="Delete Product">
-                                                        <i className="fa-solid fa-trash-can text-[10px]"></i>
-                                                    </button>
-                                                </div>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                    {filteredInventoryPackages.length === 0 && (
+                                    {filteredInventoryPackages.map(pkg => {
+                                        const isUnconfigured = pkg.mrp <= 0 || pkg.b2b_price <= 0 || pkg.b2b_price < pkg.mrp;
+                                        return (
+                                            <tr key={pkg.id} className={`transition-colors group ${isUnconfigured ? 'bg-yellow-50/90 border-l-4 border-yellow-500 ring-1 ring-inset ring-yellow-400' : 'hover:bg-gray-50/50'}`}>
+                                                <td className="p-1 pl-4 w-36">
+                                                    <input
+                                                        value={pkg.code_name || ''}
+                                                        onChange={e => handlePackageChange(pkg.id, 'code_name', e.target.value)}
+                                                        placeholder="N/A"
+                                                        className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm font-mono animate-none"
+                                                    />
+                                                </td>
+                                                <td className="p-1">
+                                                    <div className="flex items-center gap-1.5">
+                                                        <input value={pkg.name} onChange={e => handlePackageChange(pkg.id, 'name', e.target.value)} className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm" />
+                                                        {isUnconfigured && (
+                                                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black bg-yellow-300 text-yellow-950 uppercase shrink-0 border border-yellow-500 shadow-sm" title="Price Warning: MRP ≤ 0, B2B ≤ 0, or B2B < MRP">
+                                                                Price Alert
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                                <td className="p-1">
+                                                    <div className="relative">
+                                                        <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-gray-300 text-[10px]">₹</span>
+                                                        <input type="number" value={pkg.mrp} onChange={e => handlePackageChange(pkg.id, 'mrp', Number(e.target.value))} className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-gray-600 text-sm" />
+                                                    </div>
+                                                </td>
+                                                <td className="p-1">
+                                                    <div className="relative font-bold">
+                                                        <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-blue-200 text-[10px]">₹</span>
+                                                        <input type="number" value={pkg.b2b_price} onChange={e => handlePackageChange(pkg.id, 'b2b_price', Number(e.target.value))} className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-blue-700 font-bold text-sm" />
+                                                    </div>
+                                                </td>
+                                                <td className="p-1 text-center">
+                                                    <div className="flex items-center gap-1.5 justify-center">
+                                                        <button onClick={() => handleSavePackage(pkg)} className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-blue-600 hover:text-white rounded border border-gray-100 transition-all shrink-0" title="Save Product">
+                                                            <i className="fa-solid fa-floppy-disk text-[10px]"></i>
+                                                        </button>
+                                                        <button onClick={() => handleDeletePackage(pkg.id)} className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-red-600 hover:text-white rounded border border-gray-100 transition-all shrink-0 animate-none" title="Delete Product">
+                                                            <i className="fa-solid fa-trash-can text-[10px]"></i>
+                                                        </button>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+
+                                    {/* Greyed-out rows for missing Master Ratelist packages */}
+                                    {editingList.missing_master_packages && editingList.missing_master_packages.length > 0 && (
+                                        <>
+                                            <tr className="bg-slate-100">
+                                                <td colSpan={5} className="py-2 px-4 text-[10px] font-black text-slate-500 uppercase tracking-widest bg-slate-100 border-y border-slate-200">
+                                                    <i className="fa-solid fa-layer-group mr-1.5 text-slate-400"></i>
+                                                    Missing Canonical Master Packages ({editingList.missing_master_packages.length})
+                                                </td>
+                                            </tr>
+                                            {editingList.missing_master_packages.map((missingName, idx) => (
+                                                <tr key={`missing-${idx}`} className="bg-slate-50/70 border-b border-dashed border-slate-200 opacity-80 hover:opacity-100 transition-opacity">
+                                                    <td className="p-1 pl-4 text-xs text-slate-400 font-mono italic">
+                                                        PENDING
+                                                    </td>
+                                                    <td className="p-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black bg-slate-200 text-slate-700 uppercase shrink-0">Master</span>
+                                                            <span className="text-xs font-bold text-slate-700">{missingName}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1 text-xs text-slate-400 font-mono italic pl-4">₹0.00</td>
+                                                    <td className="p-1 text-xs text-slate-400 font-mono italic pl-4">₹0.00</td>
+                                                    <td className="p-1 text-center">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleAcceptMissingMaster([missingName])}
+                                                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold shadow-sm transition-all flex items-center gap-1 mx-auto"
+                                                        >
+                                                            <i className="fa-solid fa-check text-[9px]"></i> Accept
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </>
+                                    )}
+
+                                    {filteredInventoryPackages.length === 0 && (!editingList.missing_master_packages || editingList.missing_master_packages.length === 0) && (
                                         <tr>
                                             <td colSpan={5} className="text-center py-12 text-gray-400 italic text-xs uppercase tracking-wider font-bold">
                                                 No packages match your search filter
@@ -1106,6 +1456,141 @@ const ManageLabs: React.FC = () => {
                                 <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold text-xs transition-all shadow-sm">Clone & Apply</button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: Add Alias to Master Package */}
+            {aliasModalPkg && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-200">
+                        <div className="flex items-center justify-between mb-4 pb-3 border-b border-gray-200">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center text-white shadow-sm">
+                                    <i className="fa-solid fa-tags text-xs"></i>
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-bold text-gray-800">Add Test Alias / Synonym</h3>
+                                    <p className="text-[10px] text-indigo-700 font-bold uppercase truncate max-w-[240px]">{aliasModalPkg.name}</p>
+                                </div>
+                            </div>
+                            <button onClick={() => setAliasModalPkg(null)} className="text-gray-400 hover:text-red-500">
+                                <i className="fa-solid fa-xmark text-lg"></i>
+                            </button>
+                        </div>
+
+                        <form onSubmit={handleAddAlias} className="space-y-4">
+                            <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-gray-400 uppercase">Synonym / Variant Abbreviation</label>
+                                <input
+                                    type="text"
+                                    value={newAliasName}
+                                    onChange={e => setNewAliasName(e.target.value)}
+                                    placeholder="e.g. HAEMOGRAM, COMPLETE HEMOGRAM"
+                                    required
+                                    autoFocus
+                                    className="w-full p-2.5 border border-gray-200 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-100"
+                                />
+                                <p className="text-[10px] text-gray-400 leading-relaxed pt-1">
+                                    Labs using this name or abbreviation will now automatically link to "{aliasModalPkg.name}" without raising missing test alerts.
+                                </p>
+                            </div>
+
+                            <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
+                                <button
+                                    type="button"
+                                    onClick={() => setAliasModalPkg(null)}
+                                    className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold hover:bg-gray-200"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 shadow-sm flex items-center gap-1.5"
+                                >
+                                    <i className="fa-solid fa-check"></i> Register Alias
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: XLSX Upload Mode Selection */}
+            {pendingExcelUpload && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-200 space-y-4">
+                        <div className="flex items-center gap-3 border-b border-gray-200 pb-3">
+                            <div className="w-8 h-8 rounded bg-green-600 flex items-center justify-center text-white shadow-sm">
+                                <i className="fa-solid fa-file-excel text-xs"></i>
+                            </div>
+                            <div>
+                                <h3 className="text-base font-bold text-gray-800">Excel Import Options</h3>
+                                <p className="text-[10px] text-gray-400 font-bold uppercase truncate max-w-[260px]">
+                                    {pendingExcelUpload.filename} ({pendingExcelUpload.json.length} rows)
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="space-y-3">
+                            <p className="text-xs text-gray-600">
+                                Choose how you want to apply the spreadsheet to this rate database:
+                            </p>
+
+                            <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${excelUploadMode === 'OVERWRITE' ? 'bg-blue-50/70 border-blue-500 shadow-sm' : 'bg-gray-50 border-gray-200 hover:border-gray-300'}`}>
+                                <input
+                                    type="radio"
+                                    name="excelMode"
+                                    checked={excelUploadMode === 'OVERWRITE'}
+                                    onChange={() => setExcelUploadMode('OVERWRITE')}
+                                    className="mt-0.5 text-blue-600"
+                                />
+                                <div>
+                                    <span className="text-xs font-bold text-gray-900 block flex items-center gap-1.5">
+                                        Overwrite Entire Ratelist
+                                        <span className="px-1.5 py-0.2 rounded text-[8px] font-black bg-blue-100 text-blue-800 uppercase">Recommended Default</span>
+                                    </span>
+                                    <span className="text-[11px] text-gray-500 leading-snug block mt-0.5">
+                                        Clears all existing tests in this rate database and replaces them completely with the Excel sheet.
+                                    </span>
+                                </div>
+                            </label>
+
+                            <label className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-all ${excelUploadMode === 'APPEND' ? 'bg-blue-50/70 border-blue-500 shadow-sm' : 'bg-gray-50 border-gray-200 hover:border-gray-300'}`}>
+                                <input
+                                    type="radio"
+                                    name="excelMode"
+                                    checked={excelUploadMode === 'APPEND'}
+                                    onChange={() => setExcelUploadMode('APPEND')}
+                                    className="mt-0.5 text-blue-600"
+                                />
+                                <div>
+                                    <span className="text-xs font-bold text-gray-900 block">
+                                        Add to End / Append Existing
+                                    </span>
+                                    <span className="text-[11px] text-gray-500 leading-snug block mt-0.5">
+                                        Updates prices for matching test names and appends new tests to the end without deleting anything.
+                                    </span>
+                                </div>
+                            </label>
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-3 border-t border-gray-200">
+                            <button
+                                type="button"
+                                onClick={() => setPendingExcelUpload(null)}
+                                className="px-4 py-2 bg-gray-100 text-gray-600 font-bold text-xs rounded-lg hover:bg-gray-200 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmExcelUpload}
+                                className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg shadow-sm transition-all flex items-center gap-1.5"
+                            >
+                                <i className="fa-solid fa-cloud-arrow-up"></i> Confirm & Import
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

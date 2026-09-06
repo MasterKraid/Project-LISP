@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { apiService } from './services/api';
 import LoginPage from './pages/LoginPage';
 import UserDashboard from './pages/UserDashboard';
 import AdminDashboard from './pages/AdminDashboard';
@@ -19,13 +20,12 @@ import EditUser from './pages/admin/EditUser';
 import EditCustomer from './pages/admin/EditCustomer';
 import TransactionHistoryPage from './pages/TransactionHistoryPage';
 import ManageReports from './pages/admin/ManageReports';
-import ManageComparison from './pages/admin/ManageComparison';
 import ReceiptReport from './pages/admin/ReceiptReport';
 import ClientRatelist from './pages/ClientRatelist';
 import ReloadPrompt from './components/ReloadPrompt';
 import DataEntryPortal from './pages/DataEntryPortal';
 import ClientAnalysis from './pages/ClientAnalysis';
-import { requestNotificationPermission } from './utils/notifications';
+import { requestNotificationPermission, sendLocalNotification } from './utils/notifications';
 
 const ProtectedRoute: React.FC<{ children: React.ReactElement; roles?: string[] }> = ({ children, roles }) => {
   const { user } = useAuth();
@@ -54,6 +54,34 @@ const AdminRoute: React.FC<{ children: React.ReactElement }> = ({ children }) =>
 const AppRoutes: React.FC = () => {
   const { user } = useAuth();
 
+  // Background real-time notification listener for clients
+  useEffect(() => {
+    if (user?.role === 'CLIENT') {
+      const checkNewReports = async () => {
+        try {
+          const reports = await apiService.getReportsClient();
+          const unreadCount = reports.filter(r => !r.is_read).length;
+          if (unreadCount > 0) {
+            const lastReportCountKey = 'notified_unread_reports_count';
+            const lastReportCount = sessionStorage.getItem(lastReportCountKey);
+            if (lastReportCount !== unreadCount.toString()) {
+              sendLocalNotification('New Lab Reports Available!', {
+                body: `You have ${unreadCount} new processed lab report(s) ready to review and download.`,
+                tag: 'new-lab-reports-alert'
+              });
+              sessionStorage.setItem(lastReportCountKey, unreadCount.toString());
+            }
+          }
+        } catch (e) {
+          // silent error handling
+        }
+      };
+      checkNewReports();
+      const interval = setInterval(checkNewReports, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [user]);
+
   return (
     <Routes>
       <Route path="/" element={!user ? <LoginPage /> : <Navigate to={user.role === 'ADMIN' ? '/admin-dashboard' : (user.role === 'DATA_ENTRY' ? '/data-entry-portal' : '/dashboard')} />} />
@@ -69,7 +97,7 @@ const AppRoutes: React.FC = () => {
 
       <Route path="/transactions" element={<ProtectedRoute roles={['CLIENT']}><TransactionHistoryPage /></ProtectedRoute>} />
       <Route path="/reports" element={<Navigate to="/customers" />} />
-      <Route path="/my-ratelist" element={<ProtectedRoute roles={['CLIENT']}><ClientRatelist /></ProtectedRoute>} />
+      <Route path="/my-ratelist" element={<ProtectedRoute roles={['CLIENT', 'ADMIN']}><ClientRatelist /></ProtectedRoute>} />
       <Route path="/data-entry-portal" element={<ProtectedRoute roles={['ADMIN', 'DATA_ENTRY']}><DataEntryPortal /></ProtectedRoute>} />
       <Route path="/my-analysis" element={<ProtectedRoute roles={['CLIENT']}><ClientAnalysis /></ProtectedRoute>} />
 
@@ -90,7 +118,6 @@ const AppRoutes: React.FC = () => {
       <Route path="/admin/receipt-report" element={<AdminRoute><ReceiptReport /></AdminRoute>} />
       <Route path="/admin/estimates" element={<AdminRoute><ViewDocuments docType="estimate" /></AdminRoute>} />
       <Route path="/admin/reports" element={<AdminRoute><ManageReports /></AdminRoute>} />
-      <Route path="/admin/comparison" element={<AdminRoute><ManageComparison /></AdminRoute>} />
 
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>

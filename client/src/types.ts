@@ -24,6 +24,27 @@ export interface PackageList {
     id: number;
     name: string;
     package_count?: number;
+    is_mother_ratelist?: boolean;
+    missing_master_count?: number;
+    missing_master_packages?: string[];
+    has_red_outline?: boolean;
+    has_yellow_outline?: boolean;
+    unconfigured_pricing_count?: number;
+}
+
+export interface MasterPackage {
+    id: number;
+    name: string;
+    code_name?: string;
+    alias_count?: number;
+    aliases?: string;
+}
+
+export interface AdminSettings {
+    upi_id: string;
+    organization_name?: string;
+    org_name?: string;
+    lab_name?: string;
 }
 
 export interface Package {
@@ -94,7 +115,12 @@ export interface Receipt {
     num_tests: number;
     logo_path?: string;
     created_by_user_id: number;
+    acting_as_client_id?: number;
     data_entry_done?: number;
+    lab_id?: number;
+    lab_name?: string;
+    package_list_id?: number;
+    acting_as_client?: User;
 }
 
 export interface Estimate {
@@ -142,6 +168,8 @@ export interface Document {
     data_entry_done?: number;
     lab_name?: string;
     mother_b2b_cost?: number;
+    test_names?: string;
+    items?: any[];
 }
 
 export interface LabReport {

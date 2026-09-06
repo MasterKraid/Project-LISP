@@ -79,6 +79,16 @@ router.post('/receipts', isAuthenticated, (req, res) => {
 
             const receiptId = receiptResult.lastInsertRowid;
 
+            // Auto-register doctor in doctors table if provided and not 'Self'
+            if (payload.referred_by && payload.referred_by.trim() && payload.referred_by.trim().toUpperCase() !== 'SELF') {
+                const docName = payload.referred_by.trim();
+                try {
+                    db.prepare('INSERT OR IGNORE INTO doctors (name, created_at) VALUES (?, ?)').run(docName, getISTDateTimeString());
+                } catch (err) {
+                    // Ignore duplicate or constraint error
+                }
+            }
+
             const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id) VALUES (?, ?, ?, ?, ?)');
             payload.items.forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, item.discount, item.package_list_id || null));
 
@@ -152,8 +162,12 @@ router.post('/receipts', isAuthenticated, (req, res) => {
     }
 });
 
-router.put('/receipts/:id', isAuthenticated, isAdmin, (req, res) => {
+router.put('/receipts/:id', isAuthenticated, (req, res) => {
     const user = (req.session as any).user as User;
+    if (user.role !== 'ADMIN' && user.role !== 'DATA_ENTRY' && !user.master_data_entry) {
+        return res.status(403).json({ message: "Forbidden: Admin or Data Entry access required." });
+    }
+
     const { payload } = req.body;
     const receiptId = parseInt(req.params.id, 10);
 
@@ -170,14 +184,26 @@ router.put('/receipts/:id', isAuthenticated, isAdmin, (req, res) => {
                 throw new Error("Cannot edit a receipt that has already been marked as completed by data entry.");
             }
 
+            // Auto-register doctor in doctors table if provided and not 'Self'
+            if (payload.referred_by && payload.referred_by.trim() && payload.referred_by.trim().toUpperCase() !== 'SELF') {
+                const docName = payload.referred_by.trim();
+                try {
+                    db.prepare('INSERT OR IGNORE INTO doctors (name, created_at) VALUES (?, ?)').run(docName, getISTDateTimeString());
+                } catch (err) {
+                    // Ignore duplicate or constraint error
+                }
+            }
+
             // 1. Determine old B2B client and old B2B cost from existing transaction
             const oldTx = db.prepare('SELECT * FROM transactions WHERE receipt_id = ? AND type = ?').get(receiptId, 'RECEIPT_DEDUCTION') as Transaction | undefined;
             const oldB2BCost = oldTx ? oldTx.amount_deducted : 0;
             const oldClientId = oldTx ? oldTx.user_id : -1;
 
-            // 3. Determine new B2B target client
+            // 2. Determine new B2B target client
             let newTargetClientId = -1;
-            if (existingReceipt.acting_as_client_id) {
+            if (payload.acting_as_client_id !== undefined && payload.acting_as_client_id !== null && payload.acting_as_client_id !== '') {
+                newTargetClientId = Number(payload.acting_as_client_id);
+            } else if (existingReceipt.acting_as_client_id) {
                 newTargetClientId = existingReceipt.acting_as_client_id;
             } else {
                 const creator = db.prepare('SELECT role FROM users WHERE id = ?').get(existingReceipt.created_by_user_id) as { role: string } | undefined;
@@ -186,7 +212,7 @@ router.put('/receipts/:id', isAuthenticated, isAdmin, (req, res) => {
                 }
             }
 
-            // 2. Update customer data
+            // 3. Update customer data
             const customerId = handleCustomerData(payload.customer_data, newTargetClientId !== -1 ? newTargetClientId : user.id);
 
             // 4. Calculate new B2B cost from the submitted items with database verification
@@ -222,6 +248,9 @@ router.put('/receipts/:id', isAuthenticated, isAdmin, (req, res) => {
                 if (oldTx) {
                     db.prepare('UPDATE transactions SET amount_deducted = ?, balance_snapshot = ?, date = ?, notes = ? WHERE id = ?')
                         .run(newB2BCost, newBalanceObj.wallet_balance, getISTDateTimeString(), `Edited receipt RCPT-${String(receiptId).padStart(6, '0')}`, oldTx.id);
+                } else if (newB2BCost > 0) {
+                    db.prepare('INSERT INTO transactions (user_id, date, type, amount_deducted, balance_snapshot, receipt_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                        .run(newTargetClientId, getISTDateTimeString(), 'RECEIPT_DEDUCTION', newB2BCost, newBalanceObj.wallet_balance, receiptId, `Edited receipt RCPT-${String(receiptId).padStart(6, '0')}`);
                 }
             } else {
                 // Client changed or one side was walk-in
@@ -262,7 +291,7 @@ router.put('/receipts/:id', isAuthenticated, isAdmin, (req, res) => {
             // 6. Replace receipt items
             db.prepare('DELETE FROM receipt_items WHERE receipt_id = ?').run(receiptId);
             const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id) VALUES (?, ?, ?, ?, ?)');
-            (payload.items || []).forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, isNaN(item.discount) ? 0 : item.discount, item.package_list_id || null));
+            (payload.items || []).forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, isNaN(item.discount) ? 0 : item.discount, item.package_list_id || payload.package_list_id || null));
 
             // 7. Resolve lab logo
             const lab = (payload.items && payload.items.length > 0 && payload.items[0].package_list_id)
@@ -288,21 +317,26 @@ router.post('/estimates', isAuthenticated, (req, res) => {
     const { branch, acting_as_client_id } = context || {};
 
     try {
-        const transaction = db.transaction(() => {
-            const customerId = handleCustomerData(payload.customer_data, acting_as_client_id || user.id);
+        const result = db.transaction(() => {
+            const customerId = handleCustomerData(payload.customer_data, user.id);
+            const branchId = branch?.id || user.branchId;
 
-            const estimateResult = db.prepare(`INSERT INTO estimates (customer_id, branch_id, created_at, amount_after_discount, referred_by, notes, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-                .run(customerId, branch.id, getISTDateTimeString(), payload.amount_after_discount, payload.referred_by, payload.notes, user.id);
+            const estimateResult = db.prepare(`
+                INSERT INTO estimates (customer_id, branch_id, created_at, total_mrp, amount_final, payment_method, referred_by, notes, num_tests, created_by_user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(customerId, branchId, getISTDateTimeString(), payload.total_mrp, payload.amount_final, payload.payment_method, payload.referred_by, payload.notes, payload.num_tests || payload.items.length, user.id);
 
-            const newEstimateId = estimateResult.lastInsertRowid;
-
+            const estimateId = estimateResult.lastInsertRowid;
             const insertItem = db.prepare('INSERT INTO estimate_items (estimate_id, package_name, mrp, discount_percentage) VALUES (?, ?, ?, ?)');
-            payload.items.forEach((item: any) => insertItem.run(newEstimateId, item.name, item.mrp, item.discount));
+            payload.items.forEach((item: any) => insertItem.run(estimateId, item.name, item.mrp, item.discount));
 
-            return db.prepare('SELECT * FROM estimates WHERE id = ?').get(newEstimateId) as Estimate;
-        });
-        res.status(201).json(transaction());
-    } catch (e: any) { res.status(500).json({ message: `Estimate creation failed: ${e.message}` }); }
+            return db.prepare('SELECT * FROM estimates WHERE id = ?').get(estimateId) as Estimate;
+        })();
+
+        res.status(201).json(result);
+    } catch (e: any) {
+        res.status(500).json({ message: `Estimate creation failed: ${e.message}` });
+    }
 });
 
 router.get('/receipts/:id', isAuthenticated, (req, res) => {
@@ -358,8 +392,80 @@ router.get('/receipts/:id', isAuthenticated, (req, res) => {
             }
         }
 
+        // Resolve lab information and package_list_id from items
+        let labInfo: { lab_id: number; lab_name: string } | undefined = undefined;
+        const firstItemWithList = items.find(i => i.package_list_id);
+        if (firstItemWithList) {
+            labInfo = db.prepare(`
+                SELECT l.id as lab_id, l.name as lab_name
+                FROM labs l
+                JOIN lab_package_lists lpl ON l.id = lpl.lab_id
+                WHERE lpl.package_list_id = ?
+                LIMIT 1
+            `).get(firstItemWithList.package_list_id) as { lab_id: number; lab_name: string } | undefined;
+        }
+
+        // Find mother ratelist for this lab (if any) to calculate per-item mother cost and margin
+        let motherListId: number | null = null;
+        if (labInfo && labInfo.lab_id) {
+            const motherList = db.prepare(`
+                SELECT pl.id FROM package_lists pl
+                JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id
+                WHERE lpl.lab_id = ? AND (pl.name LIKE '%Mother Ratelist%' OR pl.name LIKE '%[M]%')
+                LIMIT 1
+            `).get(labInfo.lab_id) as { id: number } | undefined;
+            if (motherList) motherListId = motherList.id;
+        }
+
+        enrichedItems = enrichedItems.map(item => {
+            let code_name = '';
+            let mother_cost = 0;
+
+            const pkg = db.prepare('SELECT code_name FROM packages WHERE name = ? AND code_name IS NOT NULL LIMIT 1').get(item.package_name) as { code_name: string } | undefined;
+            if (pkg && pkg.code_name) {
+                code_name = pkg.code_name;
+            } else {
+                const mp = db.prepare('SELECT code_name FROM master_packages WHERE name = ? LIMIT 1').get(item.package_name) as { code_name: string } | undefined;
+                if (mp && mp.code_name) code_name = mp.code_name;
+            }
+
+            if (motherListId) {
+                const motherPkg = db.prepare(`
+                    SELECT b2b_price FROM packages 
+                    WHERE package_list_id = ? AND (UPPER(name) = UPPER(?) OR (code_name IS NOT NULL AND UPPER(code_name) = UPPER(?)))
+                    LIMIT 1
+                `).get(motherListId, item.package_name, code_name || item.package_name) as { b2b_price: number } | undefined;
+                if (motherPkg) {
+                    mother_cost = motherPkg.b2b_price;
+                }
+            }
+
+            const effectiveRevenue = (item.b2b_price !== undefined && item.b2b_price > 0) ? item.b2b_price : (item.mrp || 0);
+            const margin = effectiveRevenue - mother_cost;
+
+            return {
+                ...item,
+                code_name,
+                mother_cost,
+                margin
+            };
+        });
+
+        let actingAsClientUser: any = null;
+        if (receipt.acting_as_client_id) {
+            actingAsClientUser = db.prepare('SELECT id, username, alias, role FROM users WHERE id = ?').get(receipt.acting_as_client_id);
+        }
+
+        const enrichedReceipt = {
+            ...receipt,
+            lab_id: labInfo?.lab_id || null,
+            lab_name: labInfo?.lab_name || null,
+            package_list_id: firstItemWithList?.package_list_id || null,
+            acting_as_client: actingAsClientUser
+        };
+
         const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(receipt.branch_id) as Branch;
-        res.json({ receipt, customer, items: enrichedItems, branch });
+        res.json({ receipt: enrichedReceipt, customer, items: enrichedItems, branch });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 
@@ -595,14 +701,28 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
         const userObj = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(clientId) as { wallet_balance: number };
 
         const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonth = String(now.getMonth() + 1).padStart(2, '0');
-        const currentMonthStr = `${currentYear}-${currentMonth}`;
+        const istNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
 
-        const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        const lastMonthYear = lastMonthDate.getFullYear();
-        const lastMonthVal = String(lastMonthDate.getMonth() + 1).padStart(2, '0');
-        const lastMonthStr = `${lastMonthYear}-${lastMonthVal}`;
+        const formatDateIST = (d: Date) => {
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            return `${day}/${month}/${year}`;
+        };
+
+        const todayStr = formatDateIST(istNow);
+
+        const yestDate = new Date(istNow);
+        yestDate.setDate(yestDate.getDate() - 1);
+        const yesterdayStr = formatDateIST(yestDate);
+
+        const dayBeforeDate = new Date(istNow);
+        dayBeforeDate.setDate(dayBeforeDate.getDate() - 2);
+        const dayBeforeStr = formatDateIST(dayBeforeDate);
+
+        const currentMonthStr = `${istNow.getFullYear()}-${String(istNow.getMonth() + 1).padStart(2, '0')}`;
+        const lastMonthDate = new Date(istNow.getFullYear(), istNow.getMonth() - 1, 1);
+        const lastMonthStr = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
 
         // 1. Spends, Count, Savings and Franchisee Profit
         const stats = db.prepare(`
@@ -633,18 +753,64 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
             last_month_b2b: number;
         };
 
-        // 2. Volume Trend (Last 6 Months)
-        const trend = db.prepare(`
+        // Daily stats helper:
+        const getDailyStats = (dateStr: string) => {
+            const row = db.prepare(`
+                SELECT 
+                    COUNT(r.id) as count,
+                    SUM(COALESCE(t.amount_deducted, 0)) as spend,
+                    SUM(r.amount_final - COALESCE(t.amount_deducted, 0)) as profit
+                FROM receipts r
+                LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
+                WHERE (r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?))
+                  AND substr(r.created_at, 1, 10) = ?
+            `).get(clientId, clientId, dateStr) as any;
+            return {
+                count: row?.count || 0,
+                spend: row?.spend || 0,
+                profit: row?.profit || 0
+            };
+        };
+
+        const todayStats = getDailyStats(todayStr);
+        const yesterdayStats = getDailyStats(yesterdayStr);
+        const dayBeforeStats = getDailyStats(dayBeforeStr);
+
+        // 2. Continuous 6-Month Volume & Spend Trend (Empty months filled with 0)
+        const rawTrends = db.prepare(`
             SELECT 
                 (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) as month,
                 COUNT(r.id) as count,
-                SUM(COALESCE(t.amount_deducted, 0)) as spend
+                SUM(COALESCE(t.amount_deducted, 0)) as spend,
+                SUM(r.amount_final - COALESCE(t.amount_deducted, 0)) as profit
             FROM receipts r
             LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
             WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
             GROUP BY month
-            ORDER BY month DESC
         `).all(clientId, clientId) as any[];
+
+        const trendMap: { [month: string]: { count: number; spend: number; profit: number } } = {};
+        rawTrends.forEach(t => {
+            trendMap[t.month] = {
+                count: t.count || 0,
+                spend: t.spend || 0,
+                profit: t.profit || 0
+            };
+        });
+
+        // Continuous past 6 months
+        const continuousTrend: any[] = [];
+        for (let i = 5; i >= 0; i--) {
+            const d = new Date(istNow.getFullYear(), istNow.getMonth() - i, 1);
+            const mStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            const data = trendMap[mStr] || { count: 0, spend: 0, profit: 0 };
+            continuousTrend.push({
+                month: mStr,
+                count: data.count,
+                spend: data.spend,
+                profit: data.profit
+            });
+        }
 
         // 3. Top 5 Ordered Tests
         const topTests = db.prepare(`
@@ -671,9 +837,12 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
                 current_month_mrp: monthlyStats.current_month_mrp || 0,
                 current_month_b2b: monthlyStats.current_month_b2b || 0,
                 current_month_patients: monthlyStats.current_month_patients || 0,
-                last_month_b2b: monthlyStats.last_month_b2b || 0
+                last_month_b2b: monthlyStats.last_month_b2b || 0,
+                today: todayStats,
+                yesterday: yesterdayStats,
+                day_before: dayBeforeStats
             },
-            trend: trend.reverse(), // Chronological order
+            trend: continuousTrend,
             topTests
         });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
