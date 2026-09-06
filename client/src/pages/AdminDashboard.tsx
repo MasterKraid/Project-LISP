@@ -81,7 +81,20 @@ const AdminDashboard: React.FC = () => {
                             </legend>
                             <ul className="list-none p-0 m-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 gap-3 md:gap-4">
                                 <li><DashboardLink to="/receipt-form" icon={<ReceiptIcon />} text="Create Receipt" /></li>
-                                <li><DashboardLink to="/estimate-form" icon={<EstimateIcon />} text="Create Estimate" /></li>
+                                <li>
+                                    <DashboardLink 
+                                        to="/estimate-form" 
+                                        icon={<EstimateIcon />} 
+                                        text={
+                                            <div className="flex items-center justify-between w-full">
+                                                <span>Create Estimate</span>
+                                                <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
+                                                    <i className="fa-solid fa-person-digging text-[10px]"></i> WIP
+                                                </span>
+                                            </div>
+                                        } 
+                                    />
+                                </li>
                                 <li><DashboardLink to="/admin/receipts" icon={<ViewIcon />} text="View Receipts" /></li>
                                 <li><DashboardLink to="/admin/estimates" icon={<ViewIcon />} text="View Estimates" /></li>
                                 <li><DashboardLink to="/admin/customers" icon={<CustomersIcon />} text="View Customers" /></li>

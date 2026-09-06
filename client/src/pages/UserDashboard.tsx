@@ -94,7 +94,20 @@ const UserDashboard: React.FC = () => {
                     </li>
                   </>
                 ) : user?.role === 'DATA_ENTRY' ? null : (
-                  <li><DashboardLink to="/estimate-form" icon={<EstimateIcon />} text="Create New Estimate" /></li>
+                  <li>
+                    <DashboardLink 
+                      to="/estimate-form" 
+                      icon={<EstimateIcon />} 
+                      text={
+                        <div className="flex items-center justify-between w-full">
+                          <span>Create New Estimate</span>
+                          <span className="text-[10px] font-bold uppercase tracking-wider bg-amber-100 text-amber-800 border border-amber-300 px-2 py-0.5 rounded-full flex items-center gap-1 shadow-sm">
+                            <i className="fa-solid fa-person-digging text-[10px]"></i> WIP
+                          </span>
+                        </div>
+                      } 
+                    />
+                  </li>
                 )}
 
                 <li>
