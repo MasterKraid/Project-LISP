@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, AdminSettings } from '../types';
+import { apiService } from '../services/api';
 
 interface PaymentDueModalProps {
     isOpen: boolean;
@@ -8,20 +9,42 @@ interface PaymentDueModalProps {
     settings?: AdminSettings | null;
 }
 
-const PaymentDueModal: React.FC<PaymentDueModalProps> = ({ isOpen, onClose, client, settings }) => {
+const PaymentDueModal: React.FC<PaymentDueModalProps> = ({ isOpen, onClose, client, settings: propSettings }) => {
     const [copied, setCopied] = useState(false);
+    const [loadedSettings, setLoadedSettings] = useState<AdminSettings | null>(null);
+    const [customAmount, setCustomAmount] = useState<string>('500');
+
+    useEffect(() => {
+        if (isOpen && !propSettings) {
+            apiService.getAdminSettings().then(data => {
+                setLoadedSettings(data);
+            }).catch(console.error);
+        }
+    }, [isOpen, propSettings]);
 
     if (!isOpen || !client) return null;
 
-    const dueAmount = Math.abs(client.wallet_balance || 0);
-    const upiId = settings?.upi_id || 'finance@upi';
-    const orgName = settings?.organization_name || settings?.org_name || 'Medical Laboratory';
+    const activeSettings = propSettings || loadedSettings;
+    const clientBalance = client.wallet_balance || 0;
+    const dueAmount = clientBalance < 0 ? Math.abs(clientBalance) : 0;
+    const isZeroBalance = clientBalance === 0;
+    const effectiveAmount = dueAmount > 0 ? dueAmount : (parseFloat(customAmount) || 0);
+
+    const upiId = activeSettings?.upi_id || '';
+    const orgName = activeSettings?.organization_name || activeSettings?.org_name || 'N/A';
     const clientName = client.alias || client.username;
 
-    const upiUri = `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(orgName)}&am=${dueAmount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(`Settlement UID ${client.id} ${clientName}`)}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(upiUri)}`;
+    const amountParam = effectiveAmount > 0 ? `&am=${effectiveAmount.toFixed(2)}` : '';
+    const noteText = dueAmount > 0 ? `Settlement UID ${client.id} ${clientName}` : `Recharge UID ${client.id} ${clientName}`;
+    const upiUri = upiId
+        ? `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(orgName)}${amountParam}&cu=INR&tn=${encodeURIComponent(noteText)}`
+        : '';
+    const qrUrl = upiUri
+        ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(upiUri)}`
+        : '';
 
     const handleCopy = () => {
+        if (!upiId) return;
         navigator.clipboard.writeText(upiId).then(() => {
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
@@ -32,14 +55,13 @@ const PaymentDueModal: React.FC<PaymentDueModalProps> = ({ isOpen, onClose, clie
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md border border-gray-200 overflow-hidden animate-in fade-in zoom-in-95 duration-150">
                 {/* Modal Header */}
-                <div className="p-5 border-b border-gray-100 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex justify-between items-center">
+                <div className="p-5 border-b border-gray-100 bg-slate-900 text-white flex justify-between items-center">
                     <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-amber-500/20 text-amber-300 flex items-center justify-center text-sm border border-amber-500/30">
+                        <div className="w-9 h-9 rounded-xl bg-slate-800 text-slate-300 flex items-center justify-center text-sm border border-slate-700">
                             <i className="fa-solid fa-qrcode"></i>
                         </div>
                         <div>
                             <h3 className="font-bold text-base tracking-tight">Payment Settlement QR</h3>
-                            <p className="text-[11px] text-slate-300 font-medium">Instant UPI Settlement</p>
                         </div>
                     </div>
                     <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors p-1 rounded-lg">
@@ -58,22 +80,66 @@ const PaymentDueModal: React.FC<PaymentDueModalProps> = ({ isOpen, onClose, clie
                         <div className="font-bold text-slate-800 text-base mb-3">{clientName}</div>
 
                         <div className="flex justify-between items-end pt-2 border-t border-slate-200/80">
-                            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Due Amount</span>
-                            <span className="text-2xl font-black text-rose-600">₹{dueAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                            <div>
+                                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                                    {dueAmount > 0 ? 'Outstanding Due Amount' : 'Wallet Balance / Recharge'}
+                                </span>
+                                {isZeroBalance && (
+                                    <span className="text-xs text-amber-600 font-medium">Balance is ₹0.00</span>
+                                )}
+                            </div>
+                            <span className="text-2xl font-black text-rose-600">
+                                ₹{effectiveAmount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                            </span>
                         </div>
+
+                        {isZeroBalance && (
+                            <div className="pt-2 mt-2 border-t border-slate-200/60 flex items-center justify-between gap-1.5">
+                                <span className="text-[10px] font-bold text-slate-400 uppercase">Preset:</span>
+                                <div className="flex gap-1.5">
+                                    {['200', '500', '1000', '2000'].map((amt) => (
+                                        <button
+                                            key={amt}
+                                            type="button"
+                                            onClick={() => setCustomAmount(amt)}
+                                            className={`px-2.5 py-1 text-xs font-bold rounded-lg border transition-all ${
+                                                customAmount === amt
+                                                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                                                    : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+                                            }`}
+                                        >
+                                            ₹{amt}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
+
+                    {dueAmount > 0 && (
+                        <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-left flex items-start gap-2.5">
+                            <i className="fa-solid fa-circle-exclamation text-rose-600 mt-0.5 text-sm shrink-0"></i>
+                            <div className="text-xs text-rose-900 leading-relaxed">
+                                <span className="font-bold block text-rose-700 uppercase text-[10px] tracking-wider mb-0.5">Payment Due Disclaimer</span>
+                                <span>Your wallet balance is negative. Please settle your bill via the UPI QR code below.</span>
+                            </div>
+                        </div>
+                    )}
 
                     {/* QR Code Container */}
                     <div className="flex flex-col items-center justify-center p-3 bg-white rounded-2xl border-2 border-dashed border-slate-200 shadow-inner">
-                        <img
-                            src={qrUrl}
-                            alt="UPI QR Code"
-                            className="w-56 h-56 rounded-lg object-contain"
-                            onError={(e) => {
-                                // In case offline / failed to load external image, show SVG placeholder
-                                (e.target as HTMLElement).style.display = 'none';
-                            }}
-                        />
+                        {qrUrl ? (
+                            <img
+                                src={qrUrl}
+                                alt="UPI QR Code"
+                                className="w-56 h-56 rounded-lg object-contain"
+                            />
+                        ) : (
+                            <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-400 text-xs">
+                                <i className="fa-solid fa-qrcode text-4xl mb-2 text-slate-300"></i>
+                                <span>UPI ID not configured</span>
+                            </div>
+                        )}
                         <p className="text-[11px] text-slate-400 font-semibold mt-2">Scan with Google Pay, PhonePe, Paytm, or BHIM</p>
                     </div>
 

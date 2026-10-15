@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import PageHeader from '../../components/PageHeader';
 import ChoiceModal from '../../components/ChoiceModal';
 import PaymentDueModal from '../../components/PaymentDueModal';
+import UpiSettingsModal from '../../components/UpiSettingsModal';
 import { apiService } from '../../services/api';
 import { User, Transaction, AdminSettings } from '../../types';
 
@@ -48,8 +49,6 @@ const ManageWallets: React.FC = () => {
     // Admin Lab & UPI Settings State
     const [settings, setSettings] = useState<AdminSettings | null>(null);
     const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
-    const [settingsForm, setSettingsForm] = useState<AdminSettings>({ upi_id: '', org_name: '', lab_name: '' });
-    const [isSavingSettings, setIsSavingSettings] = useState(false);
 
     // Payment Due QR Modal State
     const [paymentDueClient, setPaymentDueClient] = useState<User | null>(null);
@@ -58,24 +57,8 @@ const ManageWallets: React.FC = () => {
     useEffect(() => {
         apiService.getAdminSettings().then(data => {
             setSettings(data);
-            setSettingsForm(data);
         }).catch(console.error);
     }, []);
-
-    const handleSaveSettings = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setIsSavingSettings(true);
-        try {
-            const res = await apiService.updateAdminSettings(settingsForm);
-            setSettings(res.settings);
-            alert("Settings saved successfully!");
-            setIsSettingsModalOpen(false);
-        } catch (err) {
-            alert(`Failed to save settings: ${err}`);
-        } finally {
-            setIsSavingSettings(false);
-        }
-    };
 
     useEffect(() => {
         fetchClients(searchTerm);
@@ -528,81 +511,14 @@ const ManageWallets: React.FC = () => {
                 />
 
                 {/* Laboratory & UPI Settings Modal */}
-                {isSettingsModalOpen && (
-                    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-                        <div className="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-md border border-gray-200 animate-in fade-in zoom-in-95 duration-150">
-                            <div className="flex items-center justify-between border-b border-gray-100 pb-4 mb-4">
-                                <div className="flex items-center gap-3">
-                                    <div className="w-10 h-10 rounded-xl bg-slate-800 text-white flex items-center justify-center text-sm">
-                                        <i className="fa-solid fa-gear"></i>
-                                    </div>
-                                    <div>
-                                        <h3 className="font-bold text-base text-gray-800">Laboratory & UPI Settings</h3>
-                                        <p className="text-[11px] text-gray-400 font-medium">Configure Payment VPA & Lab Details</p>
-                                    </div>
-                                </div>
-                                <button onClick={() => setIsSettingsModalOpen(false)} className="text-gray-400 hover:text-gray-600 p-1">
-                                    <i className="fa-solid fa-xmark text-lg"></i>
-                                </button>
-                            </div>
-
-                            <form onSubmit={handleSaveSettings} className="space-y-4">
-                                <div>
-                                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">Laboratory / Brand Name</label>
-                                    <input
-                                        type="text"
-                                        value={settingsForm.lab_name || ''}
-                                        onChange={e => setSettingsForm({ ...settingsForm, lab_name: e.target.value })}
-                                        placeholder="e.g., Kraid Central Diagnostics"
-                                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
-                                    />
-                                    <p className="text-[10px] text-gray-400 mt-0.5">Displayed prominently on document headers and portal.</p>
-                                </div>
-
-                                <div>
-                                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">UPI ID (VPA)</label>
-                                    <input
-                                        type="text"
-                                        value={settingsForm.upi_id || ''}
-                                        onChange={e => setSettingsForm({ ...settingsForm, upi_id: e.target.value })}
-                                        placeholder="e.g., paytmqr@paytm, name@okaxis"
-                                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm font-mono outline-none focus:ring-2 focus:ring-blue-100"
-                                    />
-                                    <p className="text-[10px] text-gray-400 mt-0.5">Used to generate dynamic settlement QR codes for clients.</p>
-                                </div>
-
-                                <div>
-                                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">Organization / Payee Name</label>
-                                    <input
-                                        type="text"
-                                        value={settingsForm.org_name || ''}
-                                        onChange={e => setSettingsForm({ ...settingsForm, org_name: e.target.value })}
-                                        placeholder="e.g., Treat & Cure"
-                                        className="w-full p-2.5 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
-                                    />
-                                </div>
-
-                                <div className="flex justify-end gap-2 pt-4 border-t border-gray-100">
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsSettingsModalOpen(false)}
-                                        className="px-4 py-2 bg-gray-100 text-gray-600 font-bold rounded-lg hover:bg-gray-200 text-xs"
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        type="submit"
-                                        disabled={isSavingSettings}
-                                        className="px-5 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow-sm text-xs flex items-center gap-1.5"
-                                    >
-                                        {isSavingSettings ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-check"></i>}
-                                        <span>Save Settings</span>
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-                )}
+                <UpiSettingsModal
+                    isOpen={isSettingsModalOpen}
+                    onClose={() => setIsSettingsModalOpen(false)}
+                    currentSettings={settings}
+                    onSaved={(updated) => {
+                        setSettings(updated);
+                    }}
+                />
 
                 {/* Dynamic UPI Payment Due QR Modal */}
                 <PaymentDueModal

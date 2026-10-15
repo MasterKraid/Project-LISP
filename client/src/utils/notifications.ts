@@ -48,6 +48,9 @@ export const sendLocalNotification = async (title: string, options: Notification
     tag: 'tc-lis-alarm',
     renotify: true,
     silent: false,
+    data: {
+      url: options.url || '/#/dashboard?action=pay-upi'
+    },
     ...options
   };
 
@@ -64,7 +67,17 @@ export const sendLocalNotification = async (title: string, options: Notification
 
   // Fallback to standard window Notifications (foreground)
   try {
-    new Notification(title, defaultOptions);
+    const notif = new Notification(title, defaultOptions);
+    notif.onclick = () => {
+      window.focus();
+      if (options.url) {
+        window.location.hash = options.url.replace(/^\/?#/, '');
+      } else {
+        window.location.hash = '/dashboard?action=pay-upi';
+      }
+      window.dispatchEvent(new CustomEvent('open-upi-payment'));
+      notif.close();
+    };
   } catch (err) {
     console.error('Failed to trigger background or foreground notification:', err);
   }

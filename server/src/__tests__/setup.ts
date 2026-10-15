@@ -18,6 +18,13 @@ export function createTestDb() {
             phone TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS admin_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            upi_id TEXT,
+            organization_name TEXT,
+            lab_name TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,

@@ -258,23 +258,44 @@ router.get('/doctors', isAuthenticated, (req, res) => {
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 
-router.get('/admin/settings', isAdmin, (req, res) => {
+router.get('/admin/settings', isAuthenticated, (req, res) => {
     try {
-        let settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get();
+        let settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
         if (!settings) {
-            db.prepare("INSERT INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'Studio Kivx Labs', 'Project LISP')").run();
-            settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get();
+            db.prepare("INSERT INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'N/A', 'N/A')").run();
+            settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
         }
-        res.json(settings);
+        res.json({
+            ...settings,
+            org_name: settings.organization_name
+        });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 
 router.put('/admin/settings', isAdmin, (req, res) => {
     try {
-        const { upi_id, organization_name, lab_name } = req.body;
+        let current = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
+        if (!current) {
+            db.prepare("INSERT INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'N/A', 'N/A')").run();
+            current = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
+        }
+
+        const orgNameInput = req.body.organization_name !== undefined ? req.body.organization_name : req.body.org_name;
+        const newOrgName = orgNameInput !== undefined ? orgNameInput : (current?.organization_name || 'N/A');
+        const newUpiId = req.body.upi_id !== undefined ? req.body.upi_id : (current?.upi_id || '');
+        const newLabName = req.body.lab_name !== undefined ? req.body.lab_name : (current?.lab_name || 'N/A');
+
         db.prepare('UPDATE admin_settings SET upi_id = ?, organization_name = ?, lab_name = ? WHERE id = 1')
-            .run(upi_id || '', organization_name || '', lab_name || '');
-        res.json({ message: "Settings updated successfully" });
+            .run(newUpiId, newOrgName, newLabName);
+
+        const updated = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
+        res.json({
+            message: "Settings updated successfully",
+            settings: {
+                ...updated,
+                org_name: updated.organization_name
+            }
+        });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 

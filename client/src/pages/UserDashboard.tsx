@@ -2,17 +2,53 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
 import DashboardLink from '../components/DashboardLink';
+import PaymentDueModal from '../components/PaymentDueModal';
 import { ReceiptIcon, EstimateIcon, CustomersIcon, LogoutIcon, WalletIcon, RatelistIcon } from '../components/icons';
 import { sendLocalNotification } from '../utils/notifications';
 
 const UserDashboard: React.FC = () => {
   const { user, branch, logout, setActingAsClient } = useAuth();
   const [unreadReports, setUnreadReports] = useState(0);
+  const [isDueModalOpen, setIsDueModalOpen] = useState(false);
 
   // Clear acting-as-client when returning to dashboard
   useEffect(() => { setActingAsClient(null); }, [setActingAsClient]);
 
   
+  // Handle phone notification clicks or URL action to reopen modal
+  useEffect(() => {
+    const checkAction = () => {
+      if (window.location.hash.includes('action=pay-due') || window.location.hash.includes('action=pay-upi')) {
+        setIsDueModalOpen(true);
+      }
+    };
+
+    const handleMessage = (e: MessageEvent) => {
+      if (e.data?.type === 'OPEN_PAYMENT_DUE') {
+        setIsDueModalOpen(true);
+      }
+    };
+
+    const handleCustomEvent = () => {
+      setIsDueModalOpen(true);
+    };
+
+    checkAction();
+    window.addEventListener('hashchange', checkAction);
+    window.addEventListener('open-payment-due', handleCustomEvent);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleMessage);
+    }
+
+    return () => {
+      window.removeEventListener('hashchange', checkAction);
+      window.removeEventListener('open-payment-due', handleCustomEvent);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleMessage);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (user?.role === 'CLIENT') {
       apiService.getReportsClient().then(reports => {
@@ -31,18 +67,41 @@ const UserDashboard: React.FC = () => {
         }
       }).catch(console.error);
 
-      if (typeof user.wallet_balance !== 'undefined' && user.wallet_balance < 1000) {
-        const lastWalletNotifyKey = 'notified_low_wallet_balance';
+      let isNegativeAllowed = false;
+      if (user.allow_negative_balance) {
+        if (user.negative_balance_allowed_until) {
+          const until = new Date(user.negative_balance_allowed_until);
+          if (until >= new Date()) isNegativeAllowed = true;
+        } else {
+          isNegativeAllowed = true;
+        }
+      }
+
+      // If client has negative balance and negative balance is not allowed:
+      // 1. Automatically show modal popup in main menu
+      // 2. Send notification to mobile
+      if (typeof user.wallet_balance !== 'undefined' && user.wallet_balance < 0 && !isNegativeAllowed) {
+        setIsDueModalOpen(true);
+
+        const lastWalletNotifyKey = `notified_neg_balance_${user.id}_${user.wallet_balance}`;
         if (!sessionStorage.getItem(lastWalletNotifyKey)) {
-          sendLocalNotification('Low Wallet Balance Alert', {
-            body: `Your current wallet balance is ₹${user.wallet_balance.toFixed(2)}. Please settle/recharge to avoid download blocks.`,
-            tag: 'low-wallet-balance-alert'
+          sendLocalNotification('Payment Due: Outstanding Balance', {
+            body: `Your wallet balance is ₹${user.wallet_balance.toFixed(2)}. Please pay your outstanding bill via UPI.`,
+            tag: 'client-negative-balance',
+            url: '/#/dashboard?action=pay-due'
           });
           sessionStorage.setItem(lastWalletNotifyKey, 'true');
         }
       }
     }
   }, [user]);
+
+  const handleCloseModal = () => {
+    setIsDueModalOpen(false);
+    if (window.location.hash.includes('action=pay')) {
+      window.location.hash = '/dashboard';
+    }
+  };
 
   return (
     <div className="relative min-h-screen bg-slate-50">
@@ -62,9 +121,21 @@ const UserDashboard: React.FC = () => {
                     <div className="mb-2"><i className="fa-solid fa-building mr-2"></i>{branch.name}</div>
                   )}
                   {user.role === 'CLIENT' && typeof user.wallet_balance !== 'undefined' && (
-                    <div className={`font-bold px-3 py-1 rounded-full text-xs whitespace-nowrap ${user.wallet_balance < 0 ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                      <i className="fa-solid fa-wallet mr-2"></i>₹{user.wallet_balance.toFixed(2)}
-                    </div>
+                    <button
+                      onClick={() => setIsDueModalOpen(true)}
+                      className={`font-bold px-3 py-1.5 rounded-full text-xs whitespace-nowrap flex items-center gap-1.5 shadow-xs hover:opacity-90 transition-all cursor-pointer ${
+                        user.wallet_balance <= 0
+                          ? 'bg-rose-100 text-rose-800 border border-rose-300 animate-pulse'
+                          : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                      }`}
+                      title="Click to view Admin UPI QR Code for settlement or recharge"
+                    >
+                      <i className="fa-solid fa-wallet"></i>
+                      <span>₹{user.wallet_balance.toFixed(2)}</span>
+                      {user.wallet_balance <= 0 && (
+                        <span className="text-[10px] bg-rose-600 text-white px-1.5 py-0.5 rounded-full uppercase ml-1">Pay Due</span>
+                      )}
+                    </button>
                   )}
                 </div>
               )}
@@ -155,6 +226,13 @@ const UserDashboard: React.FC = () => {
       <div className="fixed bottom-4 right-4 text-xs text-slate-500 opacity-90 flex items-center gap-1 font-medium z-0 pointer-events-none select-none">
         <i className="fa-brands fa-creative-commons"></i> Studio Kivx | Created By Tathagata S.
       </div>
+
+      {/* Dynamic UPI Payment Due QR Modal */}
+      <PaymentDueModal
+        isOpen={isDueModalOpen}
+        onClose={handleCloseModal}
+        client={user}
+      />
     </div>
   );
 };

@@ -56,7 +56,8 @@ export default defineConfig({
         ]
       },
       workbox: {
-        navigateFallbackDenylist: [/^\/api/, /^\/lab_reports/]
+        navigateFallbackDenylist: [/^\/api/, /^\/lab_reports/],
+        importScripts: ['sw-notifications.js']
       }
     })
   ],

@@ -511,7 +511,7 @@ export function initDb() {
 
     // Ensure default admin_settings row
     try {
-        db.prepare("INSERT OR IGNORE INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'Studio Kivx Labs', 'Project LISP')").run();
+        db.prepare("INSERT OR IGNORE INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'N/A', 'N/A')").run();
     } catch (e) {
         console.error('Failed to ensure default admin_settings:', e);
     }
