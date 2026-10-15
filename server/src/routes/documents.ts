@@ -180,7 +180,7 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
             const existingReceipt = db.prepare('SELECT * FROM receipts WHERE id = ?').get(receiptId) as Receipt;
             if (!existingReceipt) throw new Error("Receipt not found.");
 
-            if (existingReceipt.data_entry_done === 1) {
+            if (existingReceipt.data_entry_done === 1 && user.role !== 'ADMIN') {
                 throw new Error("Cannot edit a receipt that has already been marked as completed by data entry.");
             }
 
@@ -194,10 +194,23 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
                 }
             }
 
-            // 1. Determine old B2B client and old B2B cost from existing transaction
+            // 1. Determine old B2B client and old B2B cost from existing transaction or receipt
             const oldTx = db.prepare('SELECT * FROM transactions WHERE receipt_id = ? AND type = ?').get(receiptId, 'RECEIPT_DEDUCTION') as Transaction | undefined;
-            const oldB2BCost = oldTx ? oldTx.amount_deducted : 0;
-            const oldClientId = oldTx ? oldTx.user_id : -1;
+            let oldB2BCost = 0;
+            let oldClientId = -1;
+            if (oldTx) {
+                oldB2BCost = oldTx.amount_deducted;
+                oldClientId = oldTx.user_id;
+            } else if (existingReceipt.acting_as_client_id) {
+                oldClientId = existingReceipt.acting_as_client_id;
+                oldB2BCost = existingReceipt.amount_final;
+            } else {
+                const creator = db.prepare('SELECT role FROM users WHERE id = ?').get(existingReceipt.created_by_user_id) as { role: string } | undefined;
+                if (creator && creator.role === 'CLIENT') {
+                    oldClientId = existingReceipt.created_by_user_id;
+                    oldB2BCost = existingReceipt.amount_final;
+                }
+            }
 
             // 2. Determine new B2B target client
             let newTargetClientId = -1;
@@ -237,7 +250,7 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
                 }, 0);
             }
 
-            // 5. Handle wallet adjustments
+            // 5. Handle wallet adjustments cleanly without mutating past transaction ledger
             if (oldClientId !== -1 && newTargetClientId !== -1 && oldClientId === newTargetClientId) {
                 // Same client: apply delta
                 const balanceDiff = oldB2BCost - newB2BCost;
@@ -245,19 +258,27 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
 
                 const newBalanceObj = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(newTargetClientId) as { wallet_balance: number };
 
-                if (oldTx) {
-                    db.prepare('UPDATE transactions SET amount_deducted = ?, balance_snapshot = ?, date = ?, notes = ? WHERE id = ?')
-                        .run(newB2BCost, newBalanceObj.wallet_balance, getISTDateTimeString(), `Edited receipt RCPT-${String(receiptId).padStart(6, '0')}`, oldTx.id);
-                } else if (newB2BCost > 0) {
-                    db.prepare('INSERT INTO transactions (user_id, date, type, amount_deducted, balance_snapshot, receipt_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
-                        .run(newTargetClientId, getISTDateTimeString(), 'RECEIPT_DEDUCTION', newB2BCost, newBalanceObj.wallet_balance, receiptId, `Edited receipt RCPT-${String(receiptId).padStart(6, '0')}`);
+                if (balanceDiff !== 0) {
+                    if (balanceDiff < 0) {
+                        // Additional cost: deduct delta
+                        const addedCost = -balanceDiff;
+                        db.prepare('INSERT INTO transactions (user_id, date, type, amount_deducted, balance_snapshot, receipt_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                            .run(newTargetClientId, getISTDateTimeString(), 'RECEIPT_DEDUCTION', addedCost, newBalanceObj.wallet_balance, receiptId, `Adjustment for edited receipt RCPT-${String(receiptId).padStart(6, '0')}`);
+                    } else {
+                        // Reduced cost: refund difference
+                        const refundAmount = balanceDiff;
+                        db.prepare('INSERT INTO transactions (user_id, date, type, amount_deducted, balance_snapshot, receipt_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                            .run(newTargetClientId, getISTDateTimeString(), 'ADMIN_CREDIT', -refundAmount, newBalanceObj.wallet_balance, receiptId, `Refund adjustment for edited receipt RCPT-${String(receiptId).padStart(6, '0')}`);
+                    }
                 }
             } else {
                 // Client changed or one side was walk-in
-                if (oldClientId !== -1 && oldTx) {
+                if (oldClientId !== -1 && oldB2BCost > 0) {
                     // Refund old client
                     db.prepare('UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ?').run(oldB2BCost, oldClientId);
-                    db.prepare('DELETE FROM transactions WHERE id = ?').run(oldTx.id);
+                    const oldBalanceObj = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(oldClientId) as { wallet_balance: number };
+                    db.prepare('INSERT INTO transactions (user_id, date, type, amount_deducted, balance_snapshot, receipt_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
+                        .run(oldClientId, getISTDateTimeString(), 'ADMIN_CREDIT', -oldB2BCost, oldBalanceObj.wallet_balance, receiptId, `Refund for reassigned receipt RCPT-${String(receiptId).padStart(6, '0')}`);
                 }
 
                 if (newTargetClientId !== -1 && newB2BCost > 0) {
@@ -284,7 +305,7 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
                     const newBalanceObj = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(newTargetClientId) as { wallet_balance: number };
 
                     db.prepare('INSERT INTO transactions (user_id, date, type, amount_deducted, balance_snapshot, receipt_id, notes) VALUES (?, ?, ?, ?, ?, ?, ?)')
-                        .run(newTargetClientId, getISTDateTimeString(), 'RECEIPT_DEDUCTION', newB2BCost, newBalanceObj.wallet_balance, receiptId, `Edited receipt RCPT-${String(receiptId).padStart(6, '0')}`);
+                        .run(newTargetClientId, getISTDateTimeString(), 'RECEIPT_DEDUCTION', newB2BCost, newBalanceObj.wallet_balance, receiptId, `Receipt deduction for RCPT-${String(receiptId).padStart(6, '0')}`);
                 }
             }
 
@@ -457,13 +478,45 @@ router.get('/receipts/:id', isAuthenticated, (req, res) => {
         let actingAsClientUser: any = null;
         if (receipt.acting_as_client_id) {
             actingAsClientUser = db.prepare('SELECT id, username, alias, role FROM users WHERE id = ?').get(receipt.acting_as_client_id);
+        } else {
+            const creator = db.prepare('SELECT id, username, alias, role FROM users WHERE id = ?').get(receipt.created_by_user_id) as any;
+            if (creator && creator.role === 'CLIENT') {
+                actingAsClientUser = creator;
+            }
+        }
+
+        let packageListId = firstItemWithList?.package_list_id || null;
+        if (!labInfo && targetClientId !== -1) {
+            const clientAccess = db.prepare(`
+                SELECT pl.id as package_list_id, l.id as lab_id, l.name as lab_name
+                FROM user_package_list_access ula
+                JOIN package_lists pl ON pl.id = ula.package_list_id
+                JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id
+                JOIN labs l ON l.id = lpl.lab_id
+                WHERE ula.user_id = ?
+                LIMIT 1
+            `).get(targetClientId) as any;
+            if (clientAccess) {
+                labInfo = { lab_id: clientAccess.lab_id, lab_name: clientAccess.lab_name };
+                packageListId = clientAccess.package_list_id;
+            }
+        }
+
+        let client_name = '';
+        if (actingAsClientUser) {
+            client_name = actingAsClientUser.alias || actingAsClientUser.username;
+        } else {
+            const creator = db.prepare('SELECT alias, username FROM users WHERE id = ?').get(receipt.created_by_user_id) as any;
+            if (creator) client_name = creator.alias || creator.username;
         }
 
         const enrichedReceipt = {
             ...receipt,
+            display_doc_id: `RCPT-${String(receipt.id).padStart(6, '0')}`,
+            client_name,
             lab_id: labInfo?.lab_id || null,
             lab_name: labInfo?.lab_name || null,
-            package_list_id: firstItemWithList?.package_list_id || null,
+            package_list_id: packageListId,
             acting_as_client: actingAsClientUser
         };
 
@@ -645,9 +698,12 @@ router.get('/data-entry/receipts', isAuthenticated, (req, res) => {
             }
 
             let creator = r.user_alias || r.username;
+            let client_name = r.client_alias || r.client_username;
             if (r.acting_as_client_id) {
                 const clientName = r.client_alias || r.client_username;
                 creator = `${clientName} [M.ENTRY BY - ${creator}]`;
+            } else if (!client_name) {
+                client_name = r.user_alias || r.username;
             }
 
             return {
@@ -655,6 +711,7 @@ router.get('/data-entry/receipts', isAuthenticated, (req, res) => {
                 display_doc_id,
                 display_date,
                 display_customer_id,
+                client_name: client_name || creator,
                 items,
                 lab_id: labInfo?.lab_id || null,
                 lab_name: labInfo?.lab_name || 'N/A',

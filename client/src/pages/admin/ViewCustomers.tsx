@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
@@ -17,6 +17,15 @@ const ViewCustomers: React.FC = () => {
     const [selectedCustForModal, setSelectedCustForModal] = useState<FormattedCustomer | null>(null);
     const [modalReports, setModalReports] = useState<LabReport[]>([]);
     const [isOpenModal, setIsOpenModal] = useState(false);
+
+    // Custom hover tooltip state for Customer origin (admin only)
+    const [hoveredTooltip, setHoveredTooltip] = useState<{
+        rect: DOMRect;
+        originName: string;
+        originUid: number | string;
+        originType?: string;
+        creatorName?: string;
+    } | null>(null);
 
     const loadCustomers = async () => {
         try {
@@ -62,7 +71,7 @@ const ViewCustomers: React.FC = () => {
         }
     }, [user]);
 
-    const reportsByCustomerId = React.useMemo(() => {
+    const reportsByCustomerId = useMemo(() => {
         const map: { [key: number]: LabReport[] } = {};
         reports.forEach(r => {
             if (r.customer_id) {
@@ -73,7 +82,18 @@ const ViewCustomers: React.FC = () => {
         return map;
     }, [reports]);
 
-    const filteredCustomers = React.useMemo(() => {
+    const receiptsByCustomerId = useMemo(() => {
+        const map: { [key: number]: Document[] } = {};
+        allReceipts.forEach(r => {
+            if (r.customer_id) {
+                if (!map[r.customer_id]) map[r.customer_id] = [];
+                map[r.customer_id].push(r);
+            }
+        });
+        return map;
+    }, [allReceipts]);
+
+    const filteredCustomers = useMemo(() => {
         const query = searchTerm.toLowerCase().trim();
         let list = [...customers];
         
@@ -101,7 +121,22 @@ const ViewCustomers: React.FC = () => {
         return list;
     }, [customers, searchTerm, user, reportsByCustomerId]);
 
-    const isNegativeAllowed = React.useMemo(() => {
+    const filteredClientReports = useMemo(() => {
+        const query = searchTerm.toLowerCase().trim();
+        let list = [...reports];
+
+        if (query) {
+            list = list.filter(r =>
+                r.customer_name.toLowerCase().includes(query) ||
+                (r.category && r.category.toLowerCase().includes(query)) ||
+                r.uploaded_at.toLowerCase().includes(query)
+            );
+        }
+
+        return list;
+    }, [reports, searchTerm]);
+
+    const isNegativeAllowed = useMemo(() => {
         if (!user?.allow_negative_balance) return false;
         if (user.negative_balance_allowed_until) {
             return new Date(user.negative_balance_allowed_until) >= new Date();
@@ -178,18 +213,7 @@ const ViewCustomers: React.FC = () => {
         }
     };
 
-    const handlePastelCardClick = (files: LabReport[]) => {
-        if (isReportViewBlocked) {
-            alert("Report viewing is locked due to an outstanding negative balance (-1 or less). Please clear your balance or contact admin.");
-            return;
-        }
-
-        if (files.length > 0) {
-            handleViewReport(files[0]); // Opens the latest report inline
-        }
-    };
-
-    const groupedModalReports = React.useMemo(() => {
+    const groupedModalReports = useMemo(() => {
         const groups: { [key: string]: LabReport[] } = {
             'With Header': [],
             'Without Header': [],
@@ -207,7 +231,7 @@ const ViewCustomers: React.FC = () => {
         return groups;
     }, [modalReports]);
 
-    const customerReceipts = React.useMemo(() => {
+    const customerReceipts = useMemo(() => {
         if (!selectedCustForModal) return [];
         return allReceipts.filter(r => r.customer_id === selectedCustForModal.id);
     }, [allReceipts, selectedCustForModal]);
@@ -219,10 +243,28 @@ const ViewCustomers: React.FC = () => {
         { id: 'Others', label: 'Others', icon: 'fa-ellipsis-h', color: 'slate', pastel: 'bg-slate-100/80 border-slate-200 text-slate-855 hover:bg-slate-200/90' }
     ] as const;
 
+    // Helper for hover tooltip on RCPT number (RCP-8 requirement)
+    const getRcptTooltip = (rcpt: Document | { id?: number; display_doc_id?: string; client_name?: string; created_by_user?: string }) => {
+        const docId = rcpt.display_doc_id || `RCPT-${String(rcpt.id || 0).padStart(6, '0')}`;
+        const client = rcpt.client_name || (rcpt.created_by_user ? rcpt.created_by_user.split('[')[0].trim() : '');
+        return client ? `${docId} - ${client}` : docId;
+    };
+
     return (
         <div className="p-3 sm:p-6 max-w-7xl mx-auto space-y-6">
             <div className="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-gray-200">
-                <PageHeader title="Customer Directory" showActingAs={false} />
+                <PageHeader 
+                    title={user?.role === 'CLIENT' ? 'View Reports' : 'Customer Directory'} 
+                    showActingAs={false} 
+                />
+
+                {/* Client Negative Balance Lock Warning */}
+                {user?.role === 'CLIENT' && isReportViewBlocked && (
+                    <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold flex items-center gap-3">
+                        <i className="fa-solid fa-lock text-rose-600 text-base"></i>
+                        <span>Report viewing is locked due to an outstanding negative balance (-1 or less). Please clear your balance or contact admin.</span>
+                    </div>
+                )}
 
                 <div className="relative flex flex-col">
                     <div className="md:absolute static top-0 right-6 md:-translate-y-[5px] mb-4 md:mb-0 flex justify-end order-1 md:order-none">
@@ -232,113 +274,245 @@ const ViewCustomers: React.FC = () => {
                                 type="text"
                                 value={searchTerm}
                                 onChange={e => setSearchTerm(e.target.value)}
-                                placeholder="Search by ID, Name, or Mobile..."
+                                placeholder={user?.role === 'CLIENT' ? "Search by Patient, Category, Date..." : "Search by ID, Name, or Mobile..."}
                                 className="search-input"
                             />
                         </div>
                     </div>
 
-                    <fieldset className="border-2 border-gray-300 p-4 md:p-6 rounded-xl order-2 min-w-0">
-                        <legend className="px-3 flex items-center gap-2">
-                            <div className="w-7 h-7 rounded bg-gray-800 flex items-center justify-center text-white shadow-sm">
-                                <i className="fa-solid fa-users text-xs"></i>
-                            </div>
-                            <span className="text-base md:text-lg font-bold text-gray-800 uppercase tracking-tight md:tracking-normal">All Registered Customers</span>
-                        </legend>
+                    {/* CLIENT VIEW: RCP-7 Client Portal "View Reports" */}
+                    {user?.role === 'CLIENT' ? (
+                        <fieldset className="border-2 border-gray-300 p-4 md:p-6 rounded-xl order-2 min-w-0">
+                            <legend className="px-3 flex items-center gap-2">
+                                <div className="w-7 h-7 rounded bg-gray-800 flex items-center justify-center text-white shadow-sm">
+                                    <i className="fa-solid fa-file-medical text-xs"></i>
+                                </div>
+                                <span className="text-base md:text-lg font-bold text-gray-800 uppercase tracking-tight md:tracking-normal">My Lab Reports</span>
+                            </legend>
 
-                        <div className="overflow-x-auto rounded-lg border border-gray-200">
-                            <table className="w-full min-w-[800px] bg-white divide-y divide-gray-200">
-                                <thead className="bg-gray-50">
-                                    <tr>
-                                        <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Identity</th>
-                                        <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Contact & Info</th>
-                                        <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Registration</th>
-                                        <th className="py-3 px-4 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-100 text-sm">
-                                    {isLoading ? (
-                                        <tr><td colSpan={4} className="text-center py-12 text-gray-400 italic text-sm">Synchronizing customer records...</td></tr>
-                                    ) : filteredCustomers.length === 0 ? (
-                                        <tr><td colSpan={4} className="text-center py-12 text-gray-400 italic text-sm">No customers matching your search found.</td></tr>
-                                    ) : (
-                                        filteredCustomers.map(cust => {
-                                            const custReports = reportsByCustomerId[cust.id] || [];
-                                            const hasUnseenReport = custReports.some(r => !r.is_read);
-                                            return (
-                                                <tr 
-                                                    key={cust.id} 
-                                                    onClick={() => handleOpenReportsModal(cust, custReports)}
-                                                    className="hover:bg-slate-100 hover:shadow-inner active:bg-slate-200 border-b border-slate-200 cursor-pointer transition-all duration-150 group"
-                                                >
-                                                    <td className="py-3 px-4">
-                                                        <div className="flex items-center gap-2">
-                                                            <div className="text-sm font-bold text-gray-800">{cust.name}</div>
-                                                            {hasUnseenReport && (
+                            <div className="overflow-x-auto rounded-lg border border-gray-200">
+                                <table className="w-full min-w-[700px] bg-white divide-y divide-gray-200">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Patient Details</th>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Category</th>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Receipt Ref</th>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Uploaded At</th>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Status</th>
+                                            <th className="py-3 px-4 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100 text-sm">
+                                        {isLoading ? (
+                                            <tr><td colSpan={6} className="text-center py-12 text-gray-400 italic text-sm">Synchronizing your reports...</td></tr>
+                                        ) : filteredClientReports.length === 0 ? (
+                                            <tr><td colSpan={6} className="text-center py-12 text-gray-400 italic text-sm">No lab reports found.</td></tr>
+                                        ) : (
+                                            filteredClientReports.map(report => {
+                                                const custReceipts = report.customer_id ? (receiptsByCustomerId[report.customer_id] || []) : [];
+                                                const linkedReceipt = custReceipts[0];
+                                                const rcptTooltip = linkedReceipt 
+                                                    ? getRcptTooltip(linkedReceipt) 
+                                                    : (user?.alias ? `RCPT-${String(report.id).padStart(6, '0')} - ${user.alias}` : `RCPT-${String(report.id).padStart(6, '0')}`);
+
+                                                return (
+                                                    <tr 
+                                                        key={report.id}
+                                                        onClick={() => handleViewReport(report)}
+                                                        className="hover:bg-slate-50 border-b border-slate-100 cursor-pointer transition-colors group"
+                                                    >
+                                                        <td className="py-3 px-4">
+                                                            <div className="font-bold text-gray-800 text-sm">{report.customer_name}</div>
+                                                            {report.customer_id && (
+                                                                <div className="text-[10px] text-gray-400 font-mono italic">
+                                                                    CUST-{String(report.customer_id).padStart(10, '0')}
+                                                                </div>
+                                                            )}
+                                                        </td>
+                                                        <td className="py-3 px-4">
+                                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-150">
+                                                                {report.category || 'Standard'}
+                                                            </span>
+                                                        </td>
+                                                        <td className="py-3 px-4">
+                                                            {linkedReceipt ? (
                                                                 <span 
-                                                                    className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white font-extrabold text-[10px] shrink-0 border border-red-500 shadow-[0_0_8px_rgba(220,38,38,0.7)] animate-pulse"
-                                                                    title="Unread Report Attached!"
+                                                                    className="font-mono text-xs font-bold text-indigo-600 hover:text-indigo-800 cursor-help"
+                                                                    title={rcptTooltip}
                                                                 >
-                                                                    !
+                                                                    {linkedReceipt.display_doc_id}
+                                                                </span>
+                                                            ) : (
+                                                                <span className="text-xs text-gray-400 font-mono italic">N/A</span>
+                                                            )}
+                                                        </td>
+                                                        <td className="py-3 px-4 text-xs font-semibold text-gray-500">
+                                                            {report.uploaded_at}
+                                                        </td>
+                                                        <td className="py-3 px-4">
+                                                            {!report.is_read ? (
+                                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-black bg-rose-50 text-rose-600 border border-rose-200 animate-pulse">
+                                                                    Unread
+                                                                </span>
+                                                            ) : (
+                                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-150">
+                                                                    Viewed
                                                                 </span>
                                                             )}
-                                                        </div>
-                                                        <div className="text-[10px] text-gray-400 font-mono italic">{cust.display_id}</div>
-                                                    </td>
-                                                    <td className="py-3 px-4">
-                                                        <div className="flex flex-col gap-1">
-                                                            <div className="flex items-center gap-2 text-xs text-gray-600">
-                                                                <i className="fa-solid fa-phone text-[10px] text-gray-400"></i>
-                                                                {cust.mobile || 'No Mobile'}
+                                                        </td>
+                                                        <td className="py-3 px-4 text-right" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                                                            <div className="flex gap-2 justify-end">
+                                                                <button
+                                                                    onClick={() => handleViewReport(report)}
+                                                                    className={`w-8 h-8 flex items-center justify-center rounded border transition-all ${
+                                                                        isReportViewBlocked 
+                                                                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' 
+                                                                            : 'bg-slate-50 text-slate-600 hover:bg-indigo-600 hover:text-white border-slate-200'
+                                                                    }`}
+                                                                    title={isReportViewBlocked ? "Viewing Locked" : "View PDF"}
+                                                                >
+                                                                    <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-eye'} text-xs`}></i>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleDownloadReport(report)}
+                                                                    className={`w-8 h-8 flex items-center justify-center rounded border transition-all ${
+                                                                        isReportViewBlocked 
+                                                                            ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' 
+                                                                            : 'bg-slate-50 text-slate-600 hover:bg-green-600 hover:text-white border-slate-200'
+                                                                    }`}
+                                                                    title={isReportViewBlocked ? "Download Locked" : "Download PDF"}
+                                                                >
+                                                                    <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-download'} text-xs`}></i>
+                                                                </button>
                                                             </div>
-                                                            <div className="flex items-center gap-2 text-[10px] text-gray-400">
-                                                                <i className={`fa-solid ${cust.gender === 'Male' ? 'fa-mars' : 'fa-venus'} text-gray-300`}></i>
-                                                                {cust.gender || 'N/A'} • {cust.dob_formatted !== 'N/A' ? cust.dob_formatted : cust.display_age}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </fieldset>
+                    ) : (
+                        /* ADMIN / EMPLOYEE: Customers Directory */
+                        <fieldset className="border-2 border-gray-300 p-4 md:p-6 rounded-xl order-2 min-w-0">
+                            <legend className="px-3 flex items-center gap-2">
+                                <div className="w-7 h-7 rounded bg-gray-800 flex items-center justify-center text-white shadow-sm">
+                                    <i className="fa-solid fa-users text-xs"></i>
+                                </div>
+                                <span className="text-base md:text-lg font-bold text-gray-800 uppercase tracking-tight md:tracking-normal">All Registered Customers</span>
+                            </legend>
+
+                            <div className="overflow-x-auto rounded-lg border border-gray-200">
+                                <table className="w-full min-w-[800px] bg-white divide-y divide-gray-200">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Identity</th>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Contact & Info</th>
+                                            <th className="py-3 px-4 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Registration</th>
+                                            <th className="py-3 px-4 text-right text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-300">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-gray-100 text-sm">
+                                        {isLoading ? (
+                                            <tr><td colSpan={4} className="text-center py-12 text-gray-400 italic text-sm">Synchronizing customer records...</td></tr>
+                                        ) : filteredCustomers.length === 0 ? (
+                                            <tr><td colSpan={4} className="text-center py-12 text-gray-400 italic text-sm">No customers matching your search found.</td></tr>
+                                        ) : (
+                                            filteredCustomers.map(cust => {
+                                                const custReports = reportsByCustomerId[cust.id] || [];
+                                                const hasUnseenReport = custReports.some(r => !r.is_read);
+                                                return (
+                                                    <tr 
+                                                        key={cust.id} 
+                                                        onClick={() => handleOpenReportsModal(cust, custReports)}
+                                                        className="hover:bg-slate-100 hover:shadow-inner active:bg-slate-200 border-b border-slate-200 cursor-pointer transition-all duration-150 group"
+                                                    >
+                                                        <td className="py-3 px-4">
+                                                            <div className="flex items-center gap-2">
+                                                                <div 
+                                                                    className={`text-sm font-bold text-gray-800 ${user?.role === 'ADMIN' ? 'cursor-help hover:text-indigo-600 transition-colors inline-flex items-center gap-1.5' : ''}`}
+                                                                    onMouseEnter={user?.role === 'ADMIN' ? (e) => {
+                                                                        const rect = e.currentTarget.getBoundingClientRect();
+                                                                        setHoveredTooltip({
+                                                                            rect,
+                                                                            originName: cust.origin_name || cust.creator_name || 'System / Direct',
+                                                                            originUid: cust.origin_uid || cust.created_by_user_id || 'N/A',
+                                                                            originType: cust.origin_type || 'User',
+                                                                            creatorName: cust.creator_name
+                                                                        });
+                                                                    } : undefined}
+                                                                    onMouseLeave={user?.role === 'ADMIN' ? () => setHoveredTooltip(null) : undefined}
+                                                                >
+                                                                    <span>{cust.name}</span>
+                                                                </div>
+                                                                {hasUnseenReport && (
+                                                                    <span 
+                                                                        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white font-extrabold text-[10px] shrink-0 border border-red-500 shadow-[0_0_8px_rgba(220,38,38,0.7)] animate-pulse"
+                                                                        title="Unread Report Attached!"
+                                                                    >
+                                                                        !
+                                                                    </span>
+                                                                )}
                                                             </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="py-3 px-4 text-xs font-semibold text-gray-500">
-                                                        {cust.display_created_at}
-                                                    </td>
-                                                    <td className="py-3 px-4 text-right">
-                                                        <div className="flex gap-2 justify-end">
-                                                            {user?.role === 'ADMIN' && (
-                                                                <>
-                                                                    <Link 
-                                                                        to={`/admin/customers/edit/${cust.id}`} 
-                                                                        onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                                                                        className="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-400 hover:text-blue-500 rounded border border-slate-100 hover:border-blue-100 transition-all" 
-                                                                        title="Edit Profile"
-                                                                    >
-                                                                        <i className="fa-solid fa-pen-to-square text-xs"></i>
-                                                                    </Link>
-                                                                    <button
-                                                                        onClick={async (e: React.MouseEvent) => {
-                                                                            e.stopPropagation();
-                                                                            if (window.confirm(`Are you sure you want to delete customer ${cust.name}? This will remove them from the directory, but preserve all their receipt and ledger history. This action cannot be undone. Do you want to proceed?`)) {
-                                                                                try {
-                                                                                    await apiService.deleteCustomer(cust.id);
-                                                                                    loadCustomers();
-                                                                                } catch (err: any) { alert(`Failed to delete: ${err.message || err}`); }
-                                                                            }
-                                                                        }}
-                                                                        className="w-8 h-8 flex items-center justify-center bg-red-50 text-red-500 hover:bg-red-600 hover:text-white rounded border border-red-100 transition-all"
-                                                                        title="Delete Customer"
-                                                                    >
-                                                                        <i className="fa-solid fa-trash-can text-xs"></i>
-                                                                    </button>
-                                                                </>
-                                                            )}
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })
-                                    )}
-                                </tbody>
-                            </table>
-                        </div>
-                    </fieldset>
+                                                            <div className="text-[10px] text-gray-400 font-mono italic">{cust.display_id}</div>
+                                                        </td>
+                                                        <td className="py-3 px-4">
+                                                            <div className="flex flex-col gap-1">
+                                                                <div className="flex items-center gap-2 text-xs text-gray-600">
+                                                                    <i className="fa-solid fa-phone text-[10px] text-gray-400"></i>
+                                                                    {cust.mobile || 'No Mobile'}
+                                                                </div>
+                                                                <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                                                                    <i className={`fa-solid ${cust.gender === 'Male' ? 'fa-mars' : 'fa-venus'} text-gray-300`}></i>
+                                                                    {cust.gender || 'N/A'} • {cust.dob_formatted !== 'N/A' ? cust.dob_formatted : cust.display_age}
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="py-3 px-4 text-xs font-semibold text-gray-500">
+                                                            {cust.display_created_at}
+                                                        </td>
+                                                        <td className="py-3 px-4 text-right">
+                                                            <div className="flex gap-2 justify-end">
+                                                                {user?.role === 'ADMIN' && (
+                                                                    <>
+                                                                        <Link 
+                                                                            to={`/admin/customers/edit/${cust.id}`} 
+                                                                            onClick={(e: React.MouseEvent) => e.stopPropagation()}
+                                                                            className="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-400 hover:text-blue-500 rounded border border-slate-100 hover:border-blue-100 transition-all" 
+                                                                            title="Edit Profile"
+                                                                        >
+                                                                            <i className="fa-solid fa-pen-to-square text-xs"></i>
+                                                                        </Link>
+                                                                        <button
+                                                                            onClick={async (e: React.MouseEvent) => {
+                                                                                e.stopPropagation();
+                                                                                if (window.confirm(`Are you sure you want to delete customer ${cust.name}? This will remove them from the directory, but preserve all their receipt and ledger history. This action cannot be undone. Do you want to proceed?`)) {
+                                                                                    try {
+                                                                                        await apiService.deleteCustomer(cust.id);
+                                                                                        loadCustomers();
+                                                                                    } catch (err: any) { alert(`Failed to delete: ${err.message || err}`); }
+                                                                                }
+                                                                            }}
+                                                                            className="w-8 h-8 flex items-center justify-center bg-red-50 text-red-500 hover:bg-red-600 hover:text-white rounded border border-red-100 transition-all"
+                                                                            title="Delete Customer"
+                                                                        >
+                                                                            <i className="fa-solid fa-trash-can text-xs"></i>
+                                                                        </button>
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </fieldset>
+                    )}
                 </div>
             </div>
 
@@ -441,7 +615,7 @@ const ViewCustomers: React.FC = () => {
                                         return (
                                             <div 
                                                 key={cat.id} 
-                                                onClick={() => files.length > 0 && handlePastelCardClick(files)}
+                                                onClick={() => files.length > 0 && !isReportViewBlocked && handleViewReport(files[0])}
                                                 className={`border rounded-2xl p-4 transition-all text-center space-y-2 flex flex-col items-center justify-center min-h-[120px] ${pastelColors} ${files.length > 0 ? 'cursor-pointer hover:scale-[1.02]' : ''}`}
                                             >
                                                 <div className="w-9 h-9 rounded-full bg-white/95 shadow-sm flex items-center justify-center shrink-0">
@@ -497,7 +671,7 @@ const ViewCustomers: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Customer Receipts Section */}
+                            {/* Customer Receipts Section (RCP-8 hover tooltip) */}
                             {(user?.role === 'ADMIN' || user?.role === 'CLIENT' || user?.role === 'GENERAL_EMPLOYEE') && (
                                 <div className="border-t border-slate-100 pt-5 mt-5">
                                     <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-500 flex items-center gap-2 mb-4">
@@ -511,50 +685,94 @@ const ViewCustomers: React.FC = () => {
                                         </p>
                                     ) : (
                                         <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
-                                            {customerReceipts.map(rcpt => (
-                                                <div key={rcpt.id} className="bg-slate-50/50 hover:bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-center justify-between gap-4 transition-all">
-                                                    <div className="space-y-0.5">
-                                                        <div className="text-xs font-black text-slate-800">
-                                                            {rcpt.display_doc_id}
-                                                            <span className="ml-2 text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                                                                {rcpt.lab_name || 'N/A'}
+                                            {customerReceipts.map(rcpt => {
+                                                const tooltip = getRcptTooltip(rcpt);
+                                                return (
+                                                    <div key={rcpt.id} className="bg-slate-50/50 hover:bg-slate-50 p-3 rounded-xl border border-slate-100 flex items-center justify-between gap-4 transition-all">
+                                                        <div className="space-y-0.5">
+                                                            <div 
+                                                                className="text-xs font-black text-slate-800 cursor-help flex items-center gap-1.5"
+                                                                title={tooltip}
+                                                            >
+                                                                <span>{rcpt.display_doc_id}</span>
+                                                                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider">
+                                                                    {rcpt.lab_name || 'N/A'}
+                                                                </span>
+                                                            </div>
+                                                            <div className="text-[10px] text-slate-400 font-mono font-medium">{rcpt.display_date}</div>
+                                                        </div>
+                                                        <div className="flex items-center gap-3">
+                                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-black bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                                                {rcpt.display_amount}
                                                             </span>
-                                                        </div>
-                                                        <div className="text-[10px] text-slate-400 font-mono font-medium">{rcpt.display_date}</div>
-                                                    </div>
-                                                    <div className="flex items-center gap-3">
-                                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-black bg-indigo-50 text-indigo-700 border border-indigo-100">
-                                                            {rcpt.display_amount}
-                                                        </span>
-                                                        <div className="flex gap-1.5">
-                                                            {user?.role !== 'CLIENT' && (
-                                                                <Link 
-                                                                    to={`/receipt/${rcpt.id}`} 
-                                                                    className="w-7 h-7 flex items-center justify-center bg-white hover:bg-indigo-600 hover:text-white text-slate-400 hover:border-indigo-600 rounded-lg border border-slate-200 shadow-sm transition-all"
-                                                                    title="View PDF Page"
-                                                                >
-                                                                    <i className="fa-solid fa-file-pdf text-[11px]"></i>
-                                                                </Link>
-                                                            )}
-                                                            {user?.role === 'ADMIN' && (
-                                                                <Link 
-                                                                    to={`/admin/receipts/edit/${rcpt.id}`} 
-                                                                    className="w-7 h-7 flex items-center justify-center bg-white hover:bg-yellow-500 hover:text-white text-slate-400 hover:border-yellow-500 rounded-lg border border-slate-200 shadow-sm transition-all"
-                                                                    title="Edit Receipt"
-                                                                >
-                                                                    <i className="fa-solid fa-pen text-[10px]"></i>
-                                                                </Link>
-                                                            )}
+                                                            <div className="flex gap-1.5">
+                                                                {user?.role !== 'CLIENT' && (
+                                                                    <Link 
+                                                                        to={`/receipt/${rcpt.id}`} 
+                                                                        className="w-7 h-7 flex items-center justify-center bg-white hover:bg-indigo-600 hover:text-white text-slate-400 hover:border-indigo-600 rounded-lg border border-slate-200 shadow-sm transition-all"
+                                                                        title="View PDF Page"
+                                                                    >
+                                                                        <i className="fa-solid fa-file-pdf text-[11px]"></i>
+                                                                    </Link>
+                                                                )}
+                                                                {user?.role === 'ADMIN' && (
+                                                                    <Link 
+                                                                        to={`/admin/receipts/edit/${rcpt.id}`} 
+                                                                        className="w-7 h-7 flex items-center justify-center bg-white hover:bg-yellow-500 hover:text-white text-slate-400 hover:border-yellow-500 rounded-lg border border-slate-200 shadow-sm transition-all"
+                                                                        title="Edit Receipt"
+                                                                    >
+                                                                        <i className="fa-solid fa-pen text-[10px]"></i>
+                                                                    </Link>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                     </div>
-                                                </div>
-                                            ))}
+                                                );
+                                            })}
                                         </div>
                                     )}
                                 </div>
                             )}
                         </div>
                     </div>
+                </div>
+            )}
+
+            {/* Custom Fixed Position Tooltip Portal (Above Everything) */}
+            {hoveredTooltip && (
+                <div
+                    style={{
+                        top: `${hoveredTooltip.rect.top - 14}px`,
+                        left: `${hoveredTooltip.rect.left}px`,
+                        transform: 'translateY(-100%)',
+                        maxWidth: '340px'
+                    }}
+                    className="fixed z-[999999] pointer-events-none bg-slate-950/95 backdrop-blur-md text-white rounded-2xl p-3 px-3.5 shadow-2xl border-2 border-slate-700 animate-in fade-in zoom-in-95 duration-100"
+                >
+                    <div className="text-[9px] uppercase font-sans tracking-wider font-extrabold text-slate-400 mb-1 flex items-center gap-1.5">
+                        <i className="fa-solid fa-seedling text-indigo-400 text-[10px]"></i>
+                        <span>Customer Origin</span>
+                    </div>
+                    <div className="text-[12px] font-bold text-white flex items-center gap-1.5 tracking-wide">
+                        <i className="fa-solid fa-user-tie text-indigo-400 text-[10px]"></i>
+                        <span>{hoveredTooltip.originName}</span>
+                    </div>
+                    <div className="text-[10px] font-semibold text-indigo-300 font-mono mt-1 pt-1 border-t border-slate-800 flex items-center justify-between gap-3">
+                        <span className="text-slate-400 text-[9px] uppercase font-sans tracking-wider font-extrabold">User / Client UID:</span>
+                        <span className="text-emerald-400 font-black">#{String(hoveredTooltip.originUid).padStart(4, '0')}</span>
+                    </div>
+                    {hoveredTooltip.originType && (
+                        <div className="text-[9px] text-slate-400 mt-1 flex items-center justify-between gap-3">
+                            <span className="font-sans">Origin Type:</span>
+                            <span className="text-indigo-300 font-semibold">{hoveredTooltip.originType}</span>
+                        </div>
+                    )}
+                    {hoveredTooltip.creatorName && hoveredTooltip.creatorName !== hoveredTooltip.originName && (
+                        <div className="text-[9px] text-slate-400 mt-0.5 flex items-center justify-between gap-3">
+                            <span className="font-sans">Created By:</span>
+                            <span className="text-slate-300 font-medium">{hoveredTooltip.creatorName}</span>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

@@ -153,7 +153,7 @@ const ReceiptForm: React.FC = () => {
                 apiService.getReceiptById(receiptId).then(data => {
                     const { receipt, customer, items: receiptItems } = data;
 
-                    if (receipt.data_entry_done === 1) {
+                    if (receipt.data_entry_done === 1 && user?.role !== 'ADMIN') {
                         setIsLocked(true);
                     }
 
@@ -224,19 +224,24 @@ const ReceiptForm: React.FC = () => {
                 if (data.length > 0) {
                     if (editPendingListId.current && data.some(l => l.id.toString() === editPendingListId.current)) {
                         setSelectedListId(editPendingListId.current);
-                        editPendingListId.current = null;
                     } else if (selectedListId && data.some(l => l.id.toString() === selectedListId)) {
                         // keep current list selection
+                    } else if (editPendingListId.current) {
+                        setSelectedListId(editPendingListId.current);
                     } else {
                         setSelectedListId(data[0].id.toString());
                     }
                 } else {
-                    setSelectedListId('');
+                    if (!editPendingListId.current) {
+                        setSelectedListId('');
+                    }
                 }
             });
         } else {
             setPackageLists([]);
-            setSelectedListId('');
+            if (!editPendingListId.current) {
+                setSelectedListId('');
+            }
         }
     }, [selectedLabId, user, actingAsClient]);
 
@@ -245,6 +250,9 @@ const ReceiptForm: React.FC = () => {
         if (selectedListId) {
             apiService.getPackagesForList(parseInt(selectedListId)).then(data => {
                 setPackages(data.filter(p => p.name && p.name.trim() !== ''));
+                if (editPendingListId.current === selectedListId) {
+                    editPendingListId.current = null;
+                }
             });
         }
     }, [selectedListId]);
@@ -354,44 +362,53 @@ const ReceiptForm: React.FC = () => {
             const ageVal = value.replace(/[^0-9]/g, '');
             if (ageVal === '' || (parseInt(ageVal) >= 0 && parseInt(ageVal) <= 120)) {
                 customerData.age = ageVal;
-                // Keep age_years perfectly completely synced with 'age' field for backward compatibility
                 customerData.age_years = ageVal;
+                customerData.dob = '';
             }
         } else if (name === 'age_months') {
             const val = value.replace(/[^0-9]/g, '');
             if (val === '' || (parseInt(val) >= 0 && parseInt(val) <= 11)) {
                 customerData.age_months = val;
+                customerData.dob = '';
             }
         } else if (name === 'age_days') {
             const val = value.replace(/[^0-9]/g, '');
             if (val === '' || (parseInt(val) >= 0 && parseInt(val) <= 31)) {
                 customerData.age_days = val;
+                customerData.dob = '';
             }
         } else if (name === 'dob') {
             customerData.dob = value;
-            if (value) {
-                // Auto calculate age
-                const birthDate = new Date(value);
-                const today = new Date();
-                let years = today.getFullYear() - birthDate.getFullYear();
-                let months = today.getMonth() - birthDate.getMonth();
-                let days = today.getDate() - birthDate.getDate();
+            if (value && value.trim() !== '') {
+                const parts = value.split('-');
+                if (parts.length === 3) {
+                    const y = parseInt(parts[0], 10);
+                    const m = parseInt(parts[1], 10) - 1;
+                    const d = parseInt(parts[2], 10);
+                    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) {
+                        const birthDate = new Date(y, m, d);
+                        const today = new Date();
+                        let years = today.getFullYear() - birthDate.getFullYear();
+                        let months = today.getMonth() - birthDate.getMonth();
+                        let days = today.getDate() - birthDate.getDate();
 
-                if (days < 0) {
-                    months--;
-                    const prevMonth = new Date(today.getFullYear(), today.getMonth(), 0);
-                    days += prevMonth.getDate();
-                }
-                if (months < 0) {
-                    years--;
-                    months += 12;
-                }
+                        if (days < 0) {
+                            months--;
+                            const prevMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+                            days += prevMonth.getDate();
+                        }
+                        if (months < 0) {
+                            years--;
+                            months += 12;
+                        }
 
-                if (years >= 0 && months >= 0 && days >= 0) {
-                    customerData.age = years.toString();
-                    customerData.age_years = years.toString();
-                    customerData.age_months = months.toString();
-                    customerData.age_days = days.toString();
+                        if (years >= 0 && months >= 0 && days >= 0) {
+                            customerData.age = years.toString();
+                            customerData.age_years = years.toString();
+                            customerData.age_months = months.toString();
+                            customerData.age_days = days.toString();
+                        }
+                    }
                 }
             }
         } else if (name === 'prefix') {
@@ -676,18 +693,7 @@ const ReceiptForm: React.FC = () => {
             e.stopPropagation();
             const item = items.find(i => i.id === itemId);
             if (item && item.name) {
-                // If it's the last item, wait for state update then focus next
-                const index = items.findIndex(i => i.id === itemId);
-                if (index === items.length - 1) {
-                    setTimeout(() => {
-                        const newLastItem = items[items.length - 1];
-                        if (newLastItem && newLastItem.id !== itemId) {
-                            itemRefs.current[newLastItem.id]?.focus();
-                        }
-                    }, 50);
-                } else {
-                    itemRefs.current[items[index + 1].id]?.focus();
-                }
+                handleSubmit(e as any);
             }
         }
     };
@@ -739,7 +745,7 @@ const ReceiptForm: React.FC = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="flex gap-2 md:col-span-2">
                     <CleanSelect options={prefixOptions.map(p => ({ value: p, label: p }))} value={newCustomer.prefix || ''} onChange={handlePrefixChange} disabled={selectedCustomer !== null} className="w-20" />
-                    <input ref={nameRef} onKeyDown={e => handleCustomerKeyDown(e, mobileRef)} type="text" name="name" placeholder="Full Name" value={newCustomer.name} onChange={handleCustomerChange} disabled={selectedCustomer !== null} required className="flex-grow p-3 border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-blue-50 transition-all text-sm font-medium" />
+                    <input ref={nameRef} onKeyDown={e => handleCustomerKeyDown(e, ageRef)} type="text" name="name" placeholder="Full Name" value={newCustomer.name} onChange={handleCustomerChange} disabled={selectedCustomer !== null} required className="flex-grow p-3 border border-slate-200 rounded-xl outline-none focus:ring-4 focus:ring-blue-50 transition-all text-sm font-medium" />
                 </div>
 
                 {/* Gender Section */}
@@ -763,20 +769,24 @@ const ReceiptForm: React.FC = () => {
                     </div>
                 </div>
 
+                {/* Age Section - Distinct line */}
                 <div className="md:col-span-2 pt-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 px-1">Age | DOB</label>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="flex gap-2">
-                            <input ref={ageRef} onKeyDown={e => handleCustomerKeyDown(e, referredByRef)} type="number" name="age_years" placeholder="Years" max="120" value={newCustomer.age_years} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="w-1/3 p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 text-center" />
-                            <input type="number" name="age_months" placeholder="Months" max="11" value={newCustomer.age_months} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="w-1/3 p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 text-center" />
-                            <input type="number" name="age_days" placeholder="Days" max="31" value={newCustomer.age_days} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="w-1/3 p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 text-center" />
-                        </div>
-                        <div className="relative">
-                            <input type="date" name="dob" value={newCustomer.dob} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="p-3 border border-slate-200 rounded-xl text-sm w-full outline-none focus:ring-4 focus:ring-blue-50" />
-                            {isMobileView && !newCustomer.dob && (
-                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none">mm/dd/yyyy</span>
-                            )}
-                        </div>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 px-1">Age</label>
+                    <div className="flex gap-2">
+                        <input ref={ageRef} onKeyDown={e => handleCustomerKeyDown(e, referredByRef)} type="number" name="age_years" placeholder="Years" max="120" value={newCustomer.age_years} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="w-1/3 p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 text-center" />
+                        <input type="number" name="age_months" placeholder="Months" max="11" value={newCustomer.age_months} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="w-1/3 p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 text-center" />
+                        <input type="number" name="age_days" placeholder="Days" max="31" value={newCustomer.age_days} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="w-1/3 p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 text-center" />
+                    </div>
+                </div>
+
+                {/* Date of Birth Section - Distinct line */}
+                <div className="md:col-span-2 pt-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 px-1">Date of Birth (DOB)</label>
+                    <div className="relative">
+                        <input type="date" name="dob" value={newCustomer.dob} onChange={handleCustomerChange} disabled={selectedCustomer !== null} className="p-3 border border-slate-200 rounded-xl text-sm w-full outline-none focus:ring-4 focus:ring-blue-50" />
+                        {isMobileView && !newCustomer.dob && (
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none">mm/dd/yyyy</span>
+                        )}
                     </div>
                 </div>
 
@@ -784,7 +794,7 @@ const ReceiptForm: React.FC = () => {
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 px-1">Referred By / Doctor</label>
                     <input 
                         ref={referredByRef} 
-                        onKeyDown={e => handleCustomerKeyDown(e, 'tests')} 
+                        onKeyDown={e => handleCustomerKeyDown(e, mobileRef)} 
                         type="text" 
                         list="doctor-suggestions"
                         value={details.referred_by || ''} 
@@ -808,7 +818,7 @@ const ReceiptForm: React.FC = () => {
                         {/* Mobile Input */}
                         <input
                             ref={mobileRef}
-                            onKeyDown={e => handleCustomerKeyDown(e, ageRef)}
+                            onKeyDown={e => handleCustomerKeyDown(e, 'tests')}
                             type="tel"
                             name="mobile"
                             placeholder="Mobile No. (Optional)"
@@ -902,11 +912,19 @@ const ReceiptForm: React.FC = () => {
             <fieldset className="border-2 border-slate-200 p-4 rounded-xl space-y-4">
 
                 <div className="hidden md:grid md:grid-cols-12 gap-2 text-xs font-black text-slate-400 uppercase tracking-tighter mb-2 px-1">
-                    <div className={`${(isClientMode && showB2BDetails) ? 'col-span-5' : 'col-span-7'}`}>Test Name/Package</div>
+                    <div className={
+                        isClientMode 
+                            ? (showB2BDetails ? 'col-span-7' : 'col-span-9')
+                            : (showB2BDetails ? 'col-span-5' : 'col-span-7')
+                    }>Test Name/Package</div>
                     {isClientMode && showB2BDetails && <div className="col-span-2 text-right">B2B Cost</div>}
                     <div className="col-span-2 text-right">MRP (₹)</div>
-                    <div className="col-span-1 text-right">Disc %</div>
-                    <div className="col-span-1 text-right px-1">Disc ₹</div>
+                    {!isClientMode && (
+                        <>
+                            <div className="col-span-1 text-right">Disc %</div>
+                            <div className="col-span-1 text-right px-1">Disc ₹</div>
+                        </>
+                    )}
                     <div className="col-span-1"></div>
                 </div>
 
@@ -918,7 +936,11 @@ const ReceiptForm: React.FC = () => {
                             .map(p => ({ value: p.name, label: p.name, code_name: p.code_name }));
                         return (
                             <div key={item.id} className="grid grid-cols-12 gap-2 items-end border-b pb-4 last:border-0 hover:bg-slate-50 transition-colors">
-                                <div className={`${(isClientMode && showB2BDetails) ? 'col-span-12 md:col-span-5' : 'col-span-12 md:col-span-7'}`}>
+                                <div className={
+                                    isClientMode 
+                                        ? (showB2BDetails ? 'col-span-12 md:col-span-7' : 'col-span-12 md:col-span-9')
+                                        : (showB2BDetails ? 'col-span-12 md:col-span-5' : 'col-span-12 md:col-span-7')
+                                }>
                                     <label className="md:hidden text-[10px] font-bold text-slate-400 uppercase mb-1 block">Test Name</label>
                                     <SearchableDropdown ref={el => itemRefs.current[item.id] = el} options={dropdownOptions} value={item.name} onChange={name => handlePackageSelect(item.id, name)} onKeyDown={e => handleTestKeyDown(e, item.id)} placeholder="Choose Tests..." disabled={!selectedListId} />
                                 </div>
@@ -932,16 +954,20 @@ const ReceiptForm: React.FC = () => {
                                     <label className="md:hidden text-[10px] font-bold text-slate-400 uppercase mb-1 block">MRP</label>
                                     <input type="number" step="0.01" value={item.mrp} onChange={e => handleItemChange(item.id, 'mrp', parseFloat(e.target.value))} required className="w-full p-2.5 border border-slate-200 rounded-xl text-right text-xs font-bold" readOnly={item.isFromDb || isClientMode} />
                                 </div>
-                                <div className="col-span-2 md:col-span-1">
-                                    <label className="md:hidden text-[10px] font-bold text-slate-400 uppercase mb-1 block">Disc %</label>
-                                    <input type="number" step="0.1" value={item.discount} onChange={e => handleItemChange(item.id, 'discount', parseFloat(e.target.value))} className="w-full p-2.5 border border-slate-200 rounded-xl text-right text-xs font-bold" />
-                                </div>
-                                <div className="col-span-2 md:col-span-1">
-                                    <label className="md:hidden text-[10px] font-bold text-slate-400 uppercase mb-1 block">Disc ₹</label>
-                                    <div className="p-2.5 bg-slate-50 text-slate-700 rounded-xl text-right font-bold text-xs border border-slate-100 h-[38px] flex items-center justify-end">
-                                        ₹{(item.mrp * (item.discount / 100)).toFixed(0)}
-                                    </div>
-                                </div>
+                                {!isClientMode && (
+                                    <>
+                                        <div className="col-span-2 md:col-span-1">
+                                            <label className="md:hidden text-[10px] font-bold text-slate-400 uppercase mb-1 block">Disc %</label>
+                                            <input type="number" step="0.1" value={item.discount} onChange={e => handleItemChange(item.id, 'discount', parseFloat(e.target.value))} className="w-full p-2.5 border border-slate-200 rounded-xl text-right text-xs font-bold" />
+                                        </div>
+                                        <div className="col-span-2 md:col-span-1">
+                                            <label className="md:hidden text-[10px] font-bold text-slate-400 uppercase mb-1 block">Disc ₹</label>
+                                            <div className="p-2.5 bg-slate-50 text-slate-700 rounded-xl text-right font-bold text-xs border border-slate-100 h-[38px] flex items-center justify-end">
+                                                ₹{(item.mrp * (item.discount / 100)).toFixed(0)}
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
                                 <div className="col-span-1 md:col-span-1 text-right flex justify-end items-center h-10">
                                     <button type="button" onClick={() => removeItem(item.id)} className="w-9 h-9 flex items-center justify-center bg-red-50 text-red-500 rounded-full border border-red-200 hover:bg-red-500 hover:text-white transition-all shadow-sm"><i className="fa-solid fa-trash-can text-sm"></i></button>
                                 </div>
@@ -959,14 +985,16 @@ const ReceiptForm: React.FC = () => {
         <fieldset className="border-2 border-slate-200 p-4 rounded-xl space-y-4">
             <legend className="px-2 font-bold text-lg text-slate-700">Payment & Finalize</legend>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-slate-50 p-4 rounded-xl space-y-2">
-                    <label className="text-xs font-bold text-slate-400 uppercase block tracking-wider">Bulk Discount (%)</label>
-                    <div className="flex gap-2">
-                        <input type="number" value={applyDiscount} onChange={e => setApplyDiscount(e.target.value)} className="flex-grow p-3 border border-slate-200 rounded-xl text-sm" placeholder="0%" />
-                        <button type="button" onClick={handleApplyDiscountToAll} className="px-4 bg-slate-800 text-white rounded-xl"><i className="fa-solid fa-check"></i></button>
+                {!isClientMode && (
+                    <div className="bg-slate-50 p-4 rounded-xl space-y-2">
+                        <label className="text-xs font-bold text-slate-400 uppercase block tracking-wider">Bulk Discount (%)</label>
+                        <div className="flex gap-2">
+                            <input type="number" value={applyDiscount} onChange={e => setApplyDiscount(e.target.value)} className="flex-grow p-3 border border-slate-200 rounded-xl text-sm" placeholder="0%" />
+                            <button type="button" onClick={handleApplyDiscountToAll} className="px-4 bg-slate-800 text-white rounded-xl"><i className="fa-solid fa-check"></i></button>
+                        </div>
                     </div>
-                </div>
-                <div className="space-y-4">
+                )}
+                <div className={`space-y-4 ${isClientMode ? 'md:col-span-2' : ''}`}>
                     <div>
                         <label className="text-xs font-bold text-slate-400 uppercase block mb-1">Received Amount</label>
                         <input type="number" value={details.amount_received} onChange={e => setDetails({ ...details, amount_received: e.target.value })} placeholder="Full Payment (Leave Blank)" className="w-full p-3 border border-slate-200 rounded-xl text-sm font-bold text-blue-700" />
@@ -981,35 +1009,48 @@ const ReceiptForm: React.FC = () => {
                     <textarea value={details.notes} onChange={e => setDetails({ ...details, notes: e.target.value })} rows={2} className="w-full p-3 border border-slate-200 rounded-xl text-sm" placeholder="Special instructions..." />
                 </div>
                 <div className="md:col-span-2 bg-slate-50 border border-slate-200 p-6 rounded-3xl space-y-4">
-                    <div className="grid grid-cols-2 gap-y-3 text-sm">
-                        <span className="text-slate-500">Gross Total (MRP)</span>
-                        <span className="text-right font-medium">₹{calculations.totalMrp.toFixed(0)}</span>
+                    {isClientMode ? (
+                        <div className="grid grid-cols-2 gap-y-3 text-sm">
+                            <span className="text-slate-500">Total MRP</span>
+                            <span className="text-right font-medium">₹{calculations.totalMrp.toFixed(0)}</span>
 
-                        <span className="text-slate-500">Total number of tests</span>
-                        <span className="text-right font-bold text-blue-700">{calculations.totalTests}</span>
-                        {isClientMode && (
-                            <>
-                                <span className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">B2B Total (Cost)</span>
-                                <span className="text-right font-black text-green-700 mt-1">₹{calculations.totalB2B.toFixed(0)}</span>
-                            </>
-                        )}
+                            <span className="text-slate-500">Total number of tests</span>
+                            <span className="text-right font-bold text-blue-700">{calculations.totalTests}</span>
 
-                        <span className="text-slate-500">Total Discount</span>
-                        <span className="text-right font-medium text-green-600">- ₹{calculations.totalDiscountAmount.toFixed(0)}</span>
+                            {showB2BDetails && (
+                                <>
+                                    <span className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">Total B2B</span>
+                                    <span className="text-right font-black text-green-700 mt-1">₹{calculations.totalB2B.toFixed(0)}</span>
+                                </>
+                            )}
+                        </div>
+                    ) : (
+                        <>
+                            <div className="grid grid-cols-2 gap-y-3 text-sm">
+                                <span className="text-slate-500">Gross Total (MRP)</span>
+                                <span className="text-right font-medium">₹{calculations.totalMrp.toFixed(0)}</span>
 
-                        <div className="col-span-2 border-t border-slate-200 my-1"></div>
+                                <span className="text-slate-500">Total number of tests</span>
+                                <span className="text-right font-bold text-blue-700">{calculations.totalTests}</span>
 
-                        <span className="text-lg font-black text-slate-900">Net Payable</span>
-                        <span className="text-right text-xl font-black text-blue-600">₹{calculations.netPayable.toFixed(0)}</span>
+                                <span className="text-slate-500">Total Discount</span>
+                                <span className="text-right font-medium text-green-600">- ₹{calculations.totalDiscountAmount.toFixed(0)}</span>
 
-                        <span className="text-sm text-slate-500 mt-2">Amount Received</span>
-                        <span className="text-right font-bold text-slate-700 mt-2">₹{calculations.received.toFixed(0)}</span>
-                    </div>
+                                <div className="col-span-2 border-t border-slate-200 my-1"></div>
 
-                    <div className="bg-orange-50 border border-orange-100 p-4 rounded-2xl flex justify-between items-center">
-                        <span className="text-xs font-black text-orange-600 uppercase tracking-widest">Pending Balance</span>
-                        <span className="text-xl font-black text-orange-700">₹{calculations.amountDue.toFixed(0)}</span>
-                    </div>
+                                <span className="text-lg font-black text-slate-900">Net Payable</span>
+                                <span className="text-right text-xl font-black text-blue-600">₹{calculations.netPayable.toFixed(0)}</span>
+
+                                <span className="text-sm text-slate-500 mt-2">Amount Received</span>
+                                <span className="text-right font-bold text-slate-700 mt-2">₹{calculations.received.toFixed(0)}</span>
+                            </div>
+
+                            <div className="bg-orange-50 border border-orange-100 p-4 rounded-2xl flex justify-between items-center">
+                                <span className="text-xs font-black text-orange-600 uppercase tracking-widest">Pending Balance</span>
+                                <span className="text-xl font-black text-orange-700">₹{calculations.amountDue.toFixed(0)}</span>
+                            </div>
+                        </>
+                    )}
                 </div>
             </div>
         </fieldset>
@@ -1059,18 +1100,20 @@ const ReceiptForm: React.FC = () => {
                                 <thead className="bg-slate-50">
                                     <tr>
                                         <th className="p-3 text-left font-bold text-slate-600">Package</th>
-                                        {isClientMode && <th className="p-3 text-right font-bold text-slate-600">B2B</th>}
+                                        {isClientMode ? (
+                                            showB2BDetails && <th className="p-3 text-right font-bold text-slate-600">B2B</th>
+                                        ) : null}
                                         <th className="p-3 text-right font-bold text-slate-600">MRP</th>
-                                        <th className="p-3 text-right font-bold text-slate-600">Net</th>
+                                        {!isClientMode && <th className="p-3 text-right font-bold text-slate-600">Net</th>}
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
                                     {items.filter(i => i.name).map((item, idx) => (
                                         <tr key={idx}>
                                             <td className="p-3 font-medium">{item.name}</td>
-                                            {isClientMode && <td className="p-3 text-right text-green-600 font-bold">₹{item.b2b_price.toFixed(0)}</td>}
+                                            {isClientMode && showB2BDetails && <td className="p-3 text-right text-green-600 font-bold">₹{item.b2b_price.toFixed(0)}</td>}
                                             <td className="p-3 text-right text-slate-400">₹{item.mrp.toFixed(0)}</td>
-                                            <td className="p-3 text-right font-bold">₹{(item.mrp * (1 - item.discount / 100)).toFixed(0)}</td>
+                                            {!isClientMode && <td className="p-3 text-right font-bold">₹{(item.mrp * (1 - item.discount / 100)).toFixed(0)}</td>}
                                         </tr>
                                     ))}
                                 </tbody>
@@ -1078,20 +1121,28 @@ const ReceiptForm: React.FC = () => {
                         </div>
                     </section>
 
-                    <section className="bg-slate-900 text-white p-6 rounded-2xl space-y-3 shadow-2xl">
-                        {!isClientMode && (
+                    {isClientMode ? (
+                        <section className="bg-slate-900 text-white p-6 rounded-2xl space-y-3 shadow-2xl">
+                            <div className="flex justify-between text-2xl font-black text-green-400">
+                                <span>MRP</span>
+                                <span>₹{calculations.totalMrp.toFixed(0)}</span>
+                            </div>
+                            {showB2BDetails && (
+                                <div className="flex justify-between text-lg font-bold text-green-400 border-t border-slate-800 pt-3">
+                                    <span>Total B2B</span>
+                                    <span>₹{calculations.totalB2B.toFixed(2)}</span>
+                                </div>
+                            )}
+                        </section>
+                    ) : (
+                        <section className="bg-slate-900 text-white p-6 rounded-2xl space-y-3 shadow-2xl">
                             <div className="flex justify-between text-sm opacity-60"><span>Gross Value</span> <span>₹{calculations.totalMrp.toFixed(2)}</span></div>
-                        )}
-                        {isClientMode && (
-                            <div className="flex justify-between text-sm font-bold text-green-400"><span>B2B Total Cost</span> <span>₹{calculations.totalB2B.toFixed(2)}</span></div>
-                        )}
-                        {!isClientMode && (
                             <div className="flex justify-between text-sm text-red-400 font-bold"><span>Total Discount</span> <span>- ₹{calculations.totalDiscountAmount.toFixed(2)}</span></div>
-                        )}
-                        <div className="flex justify-between text-2xl font-black border-t border-slate-800 pt-3 text-green-400"><span>NET PAYABLE</span> <span>₹{calculations.netPayable.toFixed(0)}</span></div>
-                        <div className="flex justify-between text-sm font-bold text-blue-400 pt-1"><span>Received</span> <span>₹{calculations.received.toFixed(0)}</span></div>
-                        <div className="flex justify-between text-lg font-black text-orange-400"><span>DUE BALANCE</span> <span>₹{calculations.amountDue.toFixed(0)}</span></div>
-                    </section>
+                            <div className="flex justify-between text-2xl font-black border-t border-slate-800 pt-3 text-green-400"><span>NET PAYABLE</span> <span>₹{calculations.netPayable.toFixed(0)}</span></div>
+                            <div className="flex justify-between text-sm font-bold text-blue-400 pt-1"><span>Received</span> <span>₹{calculations.received.toFixed(0)}</span></div>
+                            <div className="flex justify-between text-lg font-black text-orange-400"><span>DUE BALANCE</span> <span>₹{calculations.amountDue.toFixed(0)}</span></div>
+                        </section>
+                    )}
 
                     <div className="flex flex-col sm:flex-row gap-4 pt-4">
                         <button type="button" onClick={handleDiscard} className="flex-1 py-4 px-4 bg-slate-50 text-slate-400 font-black rounded-xl hover:bg-red-50 hover:text-red-500 transition-all uppercase text-xs tracking-widest">

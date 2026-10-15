@@ -25,6 +25,7 @@ interface DataEntryReceipt {
   age_days?: number;
   gender?: 'Male' | 'Female';
   created_by_user?: string;
+  client_name?: string;
   display_doc_id: string;
   display_date: string;
   display_customer_id: string;
@@ -395,7 +396,12 @@ const DataEntryPortal: React.FC = () => {
                       </div>
                     </td>
                     <td className="p-4 font-mono font-bold text-slate-650">
-                      {rcpt.display_doc_id}
+                      <span 
+                        className="cursor-help hover:text-indigo-600 transition-colors"
+                        title={rcpt.client_name ? `${rcpt.display_doc_id} - ${rcpt.client_name}` : rcpt.display_doc_id}
+                      >
+                        {rcpt.display_doc_id}
+                      </span>
                       <div className="text-[10px] text-slate-400 font-bold font-sans uppercase tracking-wider mt-0.5">
                         {rcpt.lab_name || 'N/A'}
                       </div>
@@ -454,7 +460,13 @@ const DataEntryPortal: React.FC = () => {
                   Copy workspace
                 </div>
                 <h3 className="m-0 text-lg font-black leading-none">
-                  {selectedReceipt.customer_name} • {selectedReceipt.display_doc_id}
+                  {selectedReceipt.customer_name} •{' '}
+                  <span 
+                    className="cursor-help underline decoration-dotted decoration-indigo-400"
+                    title={selectedReceipt.client_name ? `${selectedReceipt.display_doc_id} - ${selectedReceipt.client_name}` : selectedReceipt.display_doc_id}
+                  >
+                    {selectedReceipt.display_doc_id}
+                  </span>
                 </h3>
               </div>
               <button

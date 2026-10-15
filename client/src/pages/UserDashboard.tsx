@@ -187,7 +187,7 @@ const UserDashboard: React.FC = () => {
                     icon={<CustomersIcon />} 
                     text={
                       <span className="flex items-center">
-                        View Customers
+                        {user?.role === 'CLIENT' ? 'View Reports' : 'View Customers'}
                         {user?.role === 'CLIENT' && unreadReports > 0 && (
                           <i className="fa-solid fa-circle-exclamation text-red-650 animate-pulse ml-2" title="Unread reports active"></i>
                         )}

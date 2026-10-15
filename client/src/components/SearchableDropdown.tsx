@@ -93,8 +93,12 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
             });
 
         useEffect(() => {
-            setHighlightedIndex(-1);
-        }, [searchTerm, isOpen]);
+            if (isOpen && filteredOptions.length > 0) {
+                setHighlightedIndex(0);
+            } else {
+                setHighlightedIndex(-1);
+            }
+        }, [searchTerm, isOpen, filteredOptions.length]);
 
         useEffect(() => {
             const handleClickOutside = (event: MouseEvent) => {
@@ -117,29 +121,39 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
         const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
             if (disabled) return;
 
-            if (onKeyDown) {
-                onKeyDown(e);
-                if (e.defaultPrevented) return;
-            }
-
-            if (!isOpen) {
-                if (e.key === 'ArrowDown' || e.key === 'Enter') {
+            if (isOpen) {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
+                    return;
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
+                    return;
+                } else if (e.key === 'Enter') {
+                    const targetIndex = highlightedIndex >= 0 ? highlightedIndex : (filteredOptions.length > 0 ? 0 : -1);
+                    if (targetIndex >= 0 && targetIndex < filteredOptions.length) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleSelect(filteredOptions[targetIndex]);
+                        return;
+                    }
+                } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setIsOpen(false);
+                    return;
+                }
+            } else {
+                if (e.key === 'ArrowDown') {
+                    e.preventDefault();
                     setIsOpen(true);
                     return;
                 }
             }
 
-            if (e.key === 'ArrowDown') {
-                e.preventDefault();
-                setHighlightedIndex(prev => (prev < filteredOptions.length - 1 ? prev + 1 : prev));
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                setHighlightedIndex(prev => (prev > 0 ? prev - 1 : 0));
-            } else if (e.key === 'Enter' && highlightedIndex >= 0 && highlightedIndex < filteredOptions.length) {
-                e.preventDefault();
-                handleSelect(filteredOptions[highlightedIndex]);
-            } else if (e.key === 'Escape') {
-                setIsOpen(false);
+            // When dropdown is closed or key wasn't consumed for selection, allow parent handler
+            if (onKeyDown) {
+                onKeyDown(e);
             }
         };
 

@@ -325,20 +325,53 @@ router.get('/client-wallets', isAuthenticated, (req, res) => {
 router.get('/customers', isAuthenticated, (req, res) => {
     const user = (req.session as any).user as User;
     try {
+        const selectFields = `
+            c.*,
+            u.alias as creator_alias,
+            u.username as creator_username,
+            u.role as creator_role,
+            (SELECT COALESCE(cl.alias, cl.username) 
+             FROM receipts r 
+             JOIN users cl ON r.acting_as_client_id = cl.id 
+             WHERE r.customer_id = c.id 
+             ORDER BY r.id DESC LIMIT 1) as receipt_client_name,
+            (SELECT r.acting_as_client_id 
+             FROM receipts r 
+             WHERE r.customer_id = c.id AND r.acting_as_client_id IS NOT NULL 
+             ORDER BY r.id DESC LIMIT 1) as receipt_client_id
+        `;
+
         const query = (user.role === 'ADMIN' || user.role === 'GENERAL_EMPLOYEE' || user.role === 'DATA_ENTRY')
-            ? `SELECT * FROM customers WHERE is_deleted = 0 ORDER BY id DESC`
-            : `SELECT * FROM customers WHERE is_deleted = 0 AND (created_by_user_id = ? OR id IN (SELECT customer_id FROM receipts WHERE created_by_user_id = ? OR acting_as_client_id = ?) OR id IN (SELECT customer_id FROM estimates WHERE created_by_user_id = ?)) ORDER BY id DESC`;
+            ? `SELECT ${selectFields} FROM customers c LEFT JOIN users u ON c.created_by_user_id = u.id WHERE c.is_deleted = 0 ORDER BY c.id DESC`
+            : `SELECT ${selectFields} FROM customers c LEFT JOIN users u ON c.created_by_user_id = u.id WHERE c.is_deleted = 0 AND (c.created_by_user_id = ? OR c.id IN (SELECT customer_id FROM receipts WHERE created_by_user_id = ? OR acting_as_client_id = ?) OR c.id IN (SELECT customer_id FROM estimates WHERE created_by_user_id = ?)) ORDER BY c.id DESC`;
         const params = (user.role === 'ADMIN' || user.role === 'GENERAL_EMPLOYEE' || user.role === 'DATA_ENTRY')
             ? []
             : [user.id, user.id, user.id, user.id];
-        const customers = db.prepare(query).all(...params) as Customer[];
-        const formattedCustomers: FormattedCustomer[] = customers.map((c: Customer) => ({
-            ...c,
-            display_id: `CUST-${String(c.id).padStart(10, '0')}`,
-            dob_formatted: c.dob ? new Date(c.dob).toLocaleDateString('en-GB') : 'N/A',
-            display_age: c.age_years !== null ? `${c.age_years}Y ${c.age_months || '0'}M ${c.age_days || '0'}D` : (c.age ? `${c.age} yrs` : 'N/A'),
-            display_created_at: c.created_at.split(' | ')[0]
-        }));
+        const customers = db.prepare(query).all(...params) as any[];
+        const formattedCustomers = customers.map((c: any) => {
+            const creatorName = c.creator_alias || c.creator_username || 'Unknown';
+            let originName = creatorName;
+            let originUid = c.created_by_user_id;
+            let originType = c.creator_role === 'CLIENT' ? 'Client' : (c.creator_role === 'ADMIN' ? 'Admin' : 'Staff');
+
+            if (c.receipt_client_name) {
+                originName = c.receipt_client_name;
+                originUid = c.receipt_client_id;
+                originType = 'Client (Master Entry)';
+            }
+
+            return {
+                ...c,
+                display_id: `CUST-${String(c.id).padStart(10, '0')}`,
+                dob_formatted: c.dob ? new Date(c.dob).toLocaleDateString('en-GB') : 'N/A',
+                display_age: c.age_years !== null ? `${c.age_years}Y ${c.age_months || '0'}M ${c.age_days || '0'}D` : (c.age ? `${c.age} yrs` : 'N/A'),
+                display_created_at: c.created_at.split(' | ')[0],
+                origin_name: originName,
+                origin_uid: originUid,
+                origin_type: originType,
+                creator_name: creatorName
+            };
+        });
         res.json(formattedCustomers);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
@@ -510,6 +543,7 @@ router.get('/receipts', isAuthenticated, (req, res) => {
                 referred_by: r.referred_by || 'Self',
                 num_tests: r.num_tests || 0,
                 lab_name: labInfo?.lab_name || 'N/A',
+                client_name: r.client_alias || r.client_username || r.user_alias || r.username,
                 test_names: testNames,
                 items: receiptItems
             };

@@ -266,7 +266,15 @@ const ReceiptView: React.FC = () => {
                     </div>
                     <div className="text-right text-xs">
                         <p><strong>DATE & TIME:</strong> {formattedData.displayReceiptDate}</p>
-                        <p className="mt-1"><strong>Receipt ID:</strong> RCPT-{String(receipt.id).padStart(6, '0')}</p>
+                        <p className="mt-1">
+                            <strong>Receipt ID:</strong>{' '}
+                            <span 
+                                className="cursor-help transition-colors hover:text-indigo-600 font-semibold" 
+                                title={receipt.client_name ? `RCPT-${String(receipt.id).padStart(6, '0')} - ${receipt.client_name}` : (receipt.acting_as_client?.alias || receipt.acting_as_client?.username ? `RCPT-${String(receipt.id).padStart(6, '0')} - ${receipt.acting_as_client?.alias || receipt.acting_as_client?.username}` : `RCPT-${String(receipt.id).padStart(6, '0')}`)}
+                            >
+                                RCPT-{String(receipt.id).padStart(6, '0')}
+                            </span>
+                        </p>
                     </div>
                 </div>
 

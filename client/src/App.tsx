@@ -113,7 +113,7 @@ const AppRoutes: React.FC = () => {
       <Route path="/admin/customers" element={<AdminRoute><ViewCustomers /></AdminRoute>} />
       <Route path="/admin/customers/edit/:id" element={<AdminRoute><EditCustomer /></AdminRoute>} />
 
-       <Route path="/admin/receipts" element={<AdminRoute><ViewDocuments docType="receipt" /></AdminRoute>} />
+      <Route path="/admin/receipts" element={<AdminRoute><ViewDocuments docType="receipt" /></AdminRoute>} />
       <Route path="/admin/receipts/edit/:id" element={<AdminRoute><ReceiptForm /></AdminRoute>} />
       <Route path="/admin/receipt-report" element={<AdminRoute><ReceiptReport /></AdminRoute>} />
       <Route path="/admin/estimates" element={<AdminRoute><ViewDocuments docType="estimate" /></AdminRoute>} />

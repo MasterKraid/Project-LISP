@@ -1371,7 +1371,12 @@ const ReceiptReport: React.FC = () => {
                                                     title="Click to view test itemized breakup"
                                                 >
                                                     <td className="p-3 pl-4 font-mono font-bold text-indigo-600 group-hover:underline flex items-center gap-1.5">
-                                                        <span>{r.display_doc_id}</span>
+                                                        <span 
+                                                            className="cursor-help"
+                                                            title={r.client_name ? `${r.display_doc_id} - ${r.client_name}` : (r.created_by_user ? `${r.display_doc_id} - ${r.created_by_user.split('[')[0].trim()}` : r.display_doc_id)}
+                                                        >
+                                                            {r.display_doc_id}
+                                                        </span>
                                                         <i className="fa-solid fa-arrow-up-right-from-square text-[9px] opacity-0 group-hover:opacity-100 transition-opacity"></i>
                                                     </td>
                                                     <td className="p-3">{r.display_date}</td>

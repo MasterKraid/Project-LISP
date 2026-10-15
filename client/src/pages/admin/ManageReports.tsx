@@ -304,7 +304,12 @@ const ManageReports: React.FC = () => {
                                         <div key={item.id} className="flex justify-between items-center bg-red-50/40 p-2 rounded-lg border border-red-50 gap-4">
                                             <div className="min-w-0 flex-1">
                                                 <span className="font-bold text-slate-700">{item.customer_name}</span>{" "}
-                                                <span className="text-[10px] text-slate-500 font-mono">({item.display_doc_id})</span>
+                                                <span 
+                                                    className="text-[10px] text-slate-500 font-mono cursor-help"
+                                                    title={item.client_name ? `${item.display_doc_id} - ${item.client_name}` : item.display_doc_id}
+                                                >
+                                                    ({item.display_doc_id})
+                                                </span>
                                                 <span className="text-[10px] bg-red-100 text-red-800 font-bold px-1.5 py-0.5 rounded-full ml-2">
                                                     {item.days_pending} Days Pending
                                                 </span>
@@ -359,7 +364,12 @@ const ManageReports: React.FC = () => {
                                                 <div className="text-[10px] text-indigo-500 font-bold uppercase tracking-wider">Active Target Customer</div>
                                                 <div className="text-sm font-black text-indigo-900 truncate">{selectedReceipt.customer_name}</div>
                                                 <div className="text-[9px] text-indigo-600 font-mono font-bold uppercase tracking-wider truncate">
-                                                    {selectedReceipt.display_doc_id} • UID: {selectedReceipt.customer_id}
+                                                    <span 
+                                                        className="cursor-help underline decoration-dotted decoration-indigo-300"
+                                                        title={selectedReceipt.client_name ? `${selectedReceipt.display_doc_id} - ${selectedReceipt.client_name}` : selectedReceipt.display_doc_id}
+                                                    >
+                                                        {selectedReceipt.display_doc_id}
+                                                    </span> • UID: {selectedReceipt.customer_id}
                                                 </div>
                                             </div>
                                             <button
@@ -632,7 +642,12 @@ const ManageReports: React.FC = () => {
                                                                         </div>
                                                                     )}
                                                                 </td>
-                                                                <td className={`p-3 font-mono font-medium text-slate-650 ${isSelected ? 'bg-indigo-50/20' : ''}`}>{rcpt.display_doc_id}</td>
+                                                                <td 
+                                                                    className={`p-3 font-mono font-medium text-slate-650 cursor-help ${isSelected ? 'bg-indigo-50/20' : ''}`}
+                                                                    title={rcpt.client_name ? `${rcpt.display_doc_id} - ${rcpt.client_name}` : (rcpt.created_by_user ? `${rcpt.display_doc_id} - ${rcpt.created_by_user.split('[')[0].trim()}` : rcpt.display_doc_id)}
+                                                                >
+                                                                    {rcpt.display_doc_id}
+                                                                </td>
                                                                 <td className={`p-3 ${isSelected ? 'bg-indigo-50/20' : ''}`}>
                                                                     {hasUploadedReport ? (
                                                                         <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-green-50 text-green-600 border border-green-150 shadow-sm">

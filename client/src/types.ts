@@ -121,6 +121,8 @@ export interface Receipt {
     lab_name?: string;
     package_list_id?: number;
     acting_as_client?: User;
+    display_doc_id?: string;
+    client_name?: string;
 }
 
 export interface Estimate {
@@ -146,6 +148,10 @@ export interface FormattedCustomer extends Customer {
     dob_formatted: string;
     display_age: string;
     display_created_at: string;
+    origin_name?: string;
+    origin_uid?: number;
+    origin_type?: string;
+    creator_name?: string;
 }
 
 export interface Document {
@@ -157,6 +163,7 @@ export interface Document {
     customer_id?: number;
     display_amount: string;
     created_by_user: string;
+    client_name?: string;
     acting_as_client_id?: number;
     created_by_user_id?: number;
     total_mrp?: number;

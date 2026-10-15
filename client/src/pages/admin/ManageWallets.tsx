@@ -461,7 +461,14 @@ const ManageWallets: React.FC = () => {
                                                     <div className="flex items-center gap-2 mb-1">
                                                         <span className={`w-2 h-2 rounded-full ${tx.amount_deducted > 0 ? 'bg-red-400' : 'bg-green-400'}`}></span>
                                                         <p className="text-sm font-bold text-gray-800">
-                                                            {tx.type === 'RECEIPT_DEDUCTION' ? `Receipt #RCPT-${String(tx.receipt_id).padStart(6, '0')}` :
+                                                            {tx.type === 'RECEIPT_DEDUCTION' ? (
+                                                                <span 
+                                                                    className="cursor-help hover:text-indigo-600 transition-colors"
+                                                                    title={historyClient ? `RCPT-${String(tx.receipt_id).padStart(6, '0')} - ${historyClient.alias || historyClient.username}` : `RCPT-${String(tx.receipt_id).padStart(6, '0')}`}
+                                                                >
+                                                                    {`Receipt #RCPT-${String(tx.receipt_id).padStart(6, '0')}`}
+                                                                </span>
+                                                            ) :
                                                                 tx.type === 'ADMIN_CREDIT' ? 'Credit Added' :
                                                                     tx.type === 'ADMIN_DEBIT' ? 'Funds Deducted' : 'Wallet Settlement'}
                                                         </p>
