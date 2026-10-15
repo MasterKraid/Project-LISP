@@ -7,7 +7,7 @@ import path from 'path';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
 import fs from 'fs';
-import { initDb } from './database';
+import { initDb, db } from './database';
 import apiRoutes from './routes';
 import { User } from './types';
 
@@ -223,7 +223,27 @@ app.use('/api', apiRoutes);
 
 // --- Secure Lab Reports Serving ---
 const requireAuthForReports = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if ((req as any).session && (req as any).session.user) {
+    const session = (req as any).session;
+    if (session && session.user) {
+        if (session.user.role === 'CLIENT') {
+            const client = db.prepare('SELECT wallet_balance, allow_negative_balance, negative_balance_allowed_until FROM users WHERE id = ?').get(session.user.id) as any;
+            if (client && client.wallet_balance <= -1) {
+                let isNegativeAllowed = false;
+                if (client.allow_negative_balance) {
+                    if (client.negative_balance_allowed_until) {
+                        const untilDate = new Date(client.negative_balance_allowed_until);
+                        if (untilDate >= new Date()) {
+                            isNegativeAllowed = true;
+                        }
+                    } else {
+                        isNegativeAllowed = true;
+                    }
+                }
+                if (!isNegativeAllowed) {
+                    return res.status(403).send("Forbidden: Report viewing is locked for negative balance (-1 or less).");
+                }
+            }
+        }
         next();
     } else {
         res.status(401).send("Unauthorized: Please log in to view lab reports.");

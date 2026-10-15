@@ -22,9 +22,8 @@ const ManageWallets: React.FC = () => {
     const [searchTerm, setSearchTerm] = useState('');
 
     // Wallet Filters State
-    const [minBalance, setMinBalance] = useState('');
-    const [maxBalance, setMaxBalance] = useState('');
     const [onlyNegative, setOnlyNegative] = useState(false);
+    const [onlyPositive, setOnlyPositive] = useState(false);
     const [onlyNegativeAllowed, setOnlyNegativeAllowed] = useState(false);
 
     // Transaction Date Filters State
@@ -151,9 +150,8 @@ const ManageWallets: React.FC = () => {
 
     const filteredClients = clients.filter(client => {
         const balance = client.wallet_balance;
-        if (minBalance !== '' && balance < parseFloat(minBalance)) return false;
-        if (maxBalance !== '' && balance > parseFloat(maxBalance)) return false;
         if (onlyNegative && balance >= 0) return false;
+        if (onlyPositive && balance <= 0) return false;
         if (onlyNegativeAllowed && !client.allow_negative_balance) return false;
         return true;
     });
@@ -185,38 +183,36 @@ const ManageWallets: React.FC = () => {
                         </div>
                     </div>
 
-                    <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl mb-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 order-2">
-                        <div className="space-y-1">
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Min Balance (₹)</label>
-                            <input
-                                type="number"
-                                value={minBalance}
-                                onChange={e => setMinBalance(e.target.value)}
-                                placeholder="Min"
-                                className="w-full p-2 border border-slate-200 bg-white rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
-                            />
-                        </div>
-                        <div className="space-y-1">
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Max Balance (₹)</label>
-                            <input
-                                type="number"
-                                value={maxBalance}
-                                onChange={e => setMaxBalance(e.target.value)}
-                                placeholder="Max"
-                                className="w-full p-2 border border-slate-200 bg-white rounded-lg text-sm outline-none focus:ring-2 focus:ring-blue-100"
-                            />
-                        </div>
-                        <div className="flex items-center gap-2 pt-5">
+                    <div className="bg-slate-50 border border-slate-200 p-3.5 sm:p-4 rounded-xl mb-6 flex flex-wrap items-center gap-6 order-2">
+                        <label htmlFor="onlyNegativeCheckbox" className="flex items-center gap-2 cursor-pointer select-none">
                             <input
                                 type="checkbox"
                                 id="onlyNegativeCheckbox"
                                 checked={onlyNegative}
-                                onChange={e => setOnlyNegative(e.target.checked)}
+                                onChange={e => {
+                                    setOnlyNegative(e.target.checked);
+                                    if (e.target.checked) setOnlyPositive(false);
+                                }}
                                 className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
                             />
-                            <label htmlFor="onlyNegativeCheckbox" className="text-xs font-bold text-slate-600 cursor-pointer uppercase tracking-tight">Show Only Due</label>
-                        </div>
-                        <div className="flex items-center gap-2 pt-5">
+                            <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">Show Only Due</span>
+                        </label>
+
+                        <label htmlFor="onlyPositiveCheckbox" className="flex items-center gap-2 cursor-pointer select-none">
+                            <input
+                                type="checkbox"
+                                id="onlyPositiveCheckbox"
+                                checked={onlyPositive}
+                                onChange={e => {
+                                    setOnlyPositive(e.target.checked);
+                                    if (e.target.checked) setOnlyNegative(false);
+                                }}
+                                className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                            />
+                            <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">Show Positive</span>
+                        </label>
+
+                        <label htmlFor="onlyNegativeAllowedCheckbox" className="flex items-center gap-2 cursor-pointer select-none">
                             <input
                                 type="checkbox"
                                 id="onlyNegativeAllowedCheckbox"
@@ -224,8 +220,8 @@ const ManageWallets: React.FC = () => {
                                 onChange={e => setOnlyNegativeAllowed(e.target.checked)}
                                 className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
                             />
-                            <label htmlFor="onlyNegativeAllowedCheckbox" className="text-xs font-bold text-slate-600 cursor-pointer uppercase tracking-tight">Negative Allowed</label>
-                        </div>
+                            <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">Negative Allowed</span>
+                        </label>
                     </div>
 
                     <fieldset className="border-2 border-gray-300 p-4 md:p-6 rounded-xl order-2">

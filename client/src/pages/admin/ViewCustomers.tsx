@@ -101,6 +101,16 @@ const ViewCustomers: React.FC = () => {
         return list;
     }, [customers, searchTerm, user, reportsByCustomerId]);
 
+    const isNegativeAllowed = React.useMemo(() => {
+        if (!user?.allow_negative_balance) return false;
+        if (user.negative_balance_allowed_until) {
+            return new Date(user.negative_balance_allowed_until) >= new Date();
+        }
+        return true;
+    }, [user]);
+
+    const isReportViewBlocked = user?.role === 'CLIENT' && typeof user.wallet_balance !== 'undefined' && user.wallet_balance <= -1 && !isNegativeAllowed;
+
     const handleOpenReportsModal = (cust: FormattedCustomer, custReports: LabReport[]) => {
         setSelectedCustForModal(cust);
         setModalReports(custReports);
@@ -108,11 +118,16 @@ const ViewCustomers: React.FC = () => {
     };
 
     const handleDownloadReport = async (report: LabReport) => {
+        if (isReportViewBlocked) {
+            alert("Report viewing is locked due to an outstanding negative balance (-1 or less). Please clear your balance or contact admin.");
+            return;
+        }
+
         try {
             const response = await fetch(`/api/reports/${report.id}/download`);
             if (response.status === 403) {
                 const errData = await response.json();
-                alert(errData.message || "Download blocked: Wallet account balance is negative.");
+                alert(errData.message || "Viewing blocked: Report viewing is locked for negative balance (-1 or less).");
                 return;
             }
             if (!response.ok) throw new Error('File download failed');
@@ -146,6 +161,11 @@ const ViewCustomers: React.FC = () => {
     };
 
     const handleViewReport = async (report: LabReport) => {
+        if (isReportViewBlocked) {
+            alert("Report viewing is locked due to an outstanding negative balance (-1 or less). Please clear your balance or contact admin.");
+            return;
+        }
+
         window.open(`/api/reports/${report.id}/download?inline=true`, '_blank');
         if (user?.role === 'CLIENT' && !report.is_read) {
             try {
@@ -159,6 +179,11 @@ const ViewCustomers: React.FC = () => {
     };
 
     const handlePastelCardClick = (files: LabReport[]) => {
+        if (isReportViewBlocked) {
+            alert("Report viewing is locked due to an outstanding negative balance (-1 or less). Please clear your balance or contact admin.");
+            return;
+        }
+
         if (files.length > 0) {
             handleViewReport(files[0]); // Opens the latest report inline
         }
@@ -396,14 +421,21 @@ const ViewCustomers: React.FC = () => {
                                     <span>Reports & Documents</span>
                                 </h5>
 
+                                {isReportViewBlocked && (
+                                    <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold flex items-center gap-2.5">
+                                        <i className="fa-solid fa-lock text-rose-600 text-sm"></i>
+                                        <span>Report viewing is locked due to an outstanding negative balance (-1 or less).</span>
+                                    </div>
+                                )}
+
                                 <div className="grid grid-cols-2 gap-4">
                                     {categories.map(cat => {
                                         const files = groupedModalReports[cat.id] || [];
                                         const pastelColors = {
-                                            indigo: files.length > 0 ? 'bg-indigo-50 border-indigo-100 text-indigo-800 hover:bg-indigo-100/70 shadow-sm' : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
-                                            amber: files.length > 0 ? 'bg-amber-50 border-amber-100 text-amber-800 hover:bg-amber-100/70 shadow-sm' : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
-                                            emerald: files.length > 0 ? 'bg-emerald-50 border-emerald-100 text-emerald-800 hover:bg-emerald-100/70 shadow-sm' : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
-                                            slate: files.length > 0 ? 'bg-slate-100/80 border-slate-200 text-slate-800 hover:bg-slate-200/95 shadow-sm' : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed'
+                                            indigo: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-indigo-50 border-indigo-100 text-indigo-800 hover:bg-indigo-100/70 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
+                                            amber: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-amber-50 border-amber-100 text-amber-800 hover:bg-amber-100/70 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
+                                            emerald: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-emerald-50 border-emerald-100 text-emerald-800 hover:bg-emerald-100/70 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
+                                            slate: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-slate-100/80 border-slate-200 text-slate-800 hover:bg-slate-200/95 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed'
                                         }[cat.color];
 
                                         return (
@@ -438,17 +470,21 @@ const ViewCustomers: React.FC = () => {
                                                                 <div className="flex gap-1 shrink-0">
                                                                     <button
                                                                         onClick={() => handleViewReport(report)}
-                                                                        className="w-5 h-5 flex items-center justify-center bg-slate-50 hover:bg-indigo-600 hover:text-white rounded border border-slate-100 transition-colors animate-none"
-                                                                        title="View PDF"
+                                                                        className={`w-5 h-5 flex items-center justify-center rounded border border-slate-100 transition-colors animate-none ${
+                                                                            isReportViewBlocked ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50 hover:bg-indigo-600 hover:text-white'
+                                                                        }`}
+                                                                        title={isReportViewBlocked ? "Viewing Locked" : "View PDF"}
                                                                     >
-                                                                        <i className="fa-solid fa-eye text-[8px]"></i>
+                                                                        <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-eye'} text-[8px]`}></i>
                                                                     </button>
                                                                     <button
                                                                         onClick={() => handleDownloadReport(report)}
-                                                                        className="w-5 h-5 flex items-center justify-center bg-slate-50 hover:bg-green-600 hover:text-white rounded border border-slate-100 transition-colors animate-none"
-                                                                        title="Download PDF"
+                                                                        className={`w-5 h-5 flex items-center justify-center rounded border border-slate-100 transition-colors animate-none ${
+                                                                            isReportViewBlocked ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50 hover:bg-green-600 hover:text-white'
+                                                                        }`}
+                                                                        title={isReportViewBlocked ? "Download Locked" : "Download PDF"}
                                                                     >
-                                                                        <i className="fa-solid fa-download text-[8px]"></i>
+                                                                        <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-download'} text-[8px]`}></i>
                                                                     </button>
                                                                 </div>
                                                             </div>

@@ -1134,12 +1134,12 @@ router.get('/reports/:id/download', isAuthenticated, (req, res) => {
             return res.status(403).json({ message: 'Forbidden: Unauthorized report download.' });
         }
 
-        // Enforce negative balance download blocks for B2B clients
+        // Enforce negative balance viewing lock for B2B clients (-1 or less)
         if (user.role === 'CLIENT') {
             const client = db.prepare('SELECT wallet_balance, allow_negative_balance, negative_balance_allowed_until FROM users WHERE id = ?').get(user.id) as any;
             if (client) {
                 let isNegativeAllowed = false;
-                if (client.wallet_balance >= 0) {
+                if (client.wallet_balance > -1) {
                     isNegativeAllowed = true;
                 } else if (client.allow_negative_balance) {
                     if (client.negative_balance_allowed_until) {
@@ -1153,7 +1153,7 @@ router.get('/reports/:id/download', isAuthenticated, (req, res) => {
                 }
 
                 if (!isNegativeAllowed) {
-                    return res.status(403).json({ message: "Download blocked: Wallet account balance is negative." });
+                    return res.status(403).json({ message: "Viewing blocked: Report viewing is locked for negative balance (-1 or less)." });
                 }
             }
         }

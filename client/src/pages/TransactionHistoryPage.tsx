@@ -9,6 +9,9 @@ const TransactionHistoryPage: React.FC = () => {
     const [transactions, setTransactions] = useState<Transaction[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
+    const [onlyDue, setOnlyDue] = useState(false);
+    const [onlyPositive, setOnlyPositive] = useState(false);
+
     useEffect(() => {
         if (user) {
             // Fixed: Removed user.id argument
@@ -21,7 +24,13 @@ const TransactionHistoryPage: React.FC = () => {
 
     const groupedTransactions = useMemo(() => {
         const groups: { [key: string]: Transaction[] } = {};
-        transactions.forEach(tx => {
+        const filtered = transactions.filter(tx => {
+            if (onlyDue && tx.amount_deducted <= 0) return false;
+            if (onlyPositive && tx.amount_deducted >= 0) return false;
+            return true;
+        });
+
+        filtered.forEach(tx => {
             const date = tx.date.split(' | ')[0]; // Group by DD/MM/YYYY
             if (!groups[date]) {
                 groups[date] = [];
@@ -29,7 +38,7 @@ const TransactionHistoryPage: React.FC = () => {
             groups[date].push(tx);
         });
         return groups;
-    }, [transactions]);
+    }, [transactions, onlyDue, onlyPositive]);
 
     const getTransactionTitle = (tx: Transaction) => {
         switch (tx.type) {
@@ -66,6 +75,36 @@ const TransactionHistoryPage: React.FC = () => {
                         </p>
                     </div>
                 )}
+
+                <div className="bg-slate-50 border border-slate-200 p-3.5 sm:p-4 rounded-xl mb-6 flex flex-wrap items-center gap-6">
+                    <label htmlFor="txOnlyDueCheckbox" className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            id="txOnlyDueCheckbox"
+                            checked={onlyDue}
+                            onChange={e => {
+                                setOnlyDue(e.target.checked);
+                                if (e.target.checked) setOnlyPositive(false);
+                            }}
+                            className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">Show Only Due</span>
+                    </label>
+
+                    <label htmlFor="txOnlyPositiveCheckbox" className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                            type="checkbox"
+                            id="txOnlyPositiveCheckbox"
+                            checked={onlyPositive}
+                            onChange={e => {
+                                setOnlyPositive(e.target.checked);
+                                if (e.target.checked) setOnlyDue(false);
+                            }}
+                            className="w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500 cursor-pointer"
+                        />
+                        <span className="text-xs font-bold text-slate-700 uppercase tracking-tight">Show Positive</span>
+                    </label>
+                </div>
 
                 {isLoading ? (
                     <p>Loading history...</p>
