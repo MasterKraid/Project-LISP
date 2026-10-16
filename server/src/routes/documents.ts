@@ -110,8 +110,9 @@ router.post('/receipts', isAuthenticated, (req, res) => {
 
             const receiptId = receiptResult.lastInsertRowid;
 
-            // Auto-register doctor in doctors table if provided and not 'Self'
-            if (payload.referred_by && payload.referred_by.trim() && payload.referred_by.trim().toUpperCase() !== 'SELF') {
+            // Auto-register doctor in doctors table if provided and not 'Self' / 'DR. SELF'
+            const isSelf = ['SELF', 'DR. SELF', 'DR.SELF', 'DR SELF'].includes(payload.referred_by?.trim().toUpperCase() || '');
+            if (payload.referred_by && payload.referred_by.trim() && !isSelf) {
                 const docName = payload.referred_by.trim();
                 try {
                     db.prepare('INSERT OR IGNORE INTO doctors (name, created_at) VALUES (?, ?)').run(docName, getISTDateTimeString());
@@ -189,8 +190,9 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
                 throw new Error("Cannot edit a receipt that has already been marked as completed by data entry.");
             }
 
-            // Auto-register doctor in doctors table if provided and not 'Self'
-            if (payload.referred_by && payload.referred_by.trim() && payload.referred_by.trim().toUpperCase() !== 'SELF') {
+            // Auto-register doctor in doctors table if provided and not 'Self' / 'DR. SELF'
+            const isSelfEdit = ['SELF', 'DR. SELF', 'DR.SELF', 'DR SELF'].includes(payload.referred_by?.trim().toUpperCase() || '');
+            if (payload.referred_by && payload.referred_by.trim() && !isSelfEdit) {
                 const docName = payload.referred_by.trim();
                 try {
                     db.prepare('INSERT OR IGNORE INTO doctors (name, created_at) VALUES (?, ?)').run(docName, getISTDateTimeString());

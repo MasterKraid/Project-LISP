@@ -17,6 +17,7 @@ interface SearchableDropdownProps {
     align?: 'left' | 'right' | 'auto';
     allowCustom?: boolean;
     className?: string;
+    autoDoctorPrefix?: boolean;
 }
 
 export interface SearchableDropdownHandle {
@@ -47,9 +48,14 @@ function normalizeSearchStr(str: string): string {
 }
 
 const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdownProps>(
-    ({ options, value, onChange, placeholder, disabled, onKeyDown, align = 'auto', allowCustom = false, className }, ref) => {
+    ({ options, value, onChange, placeholder, disabled, onKeyDown, align = 'auto', allowCustom = false, className, autoDoctorPrefix = false }, ref) => {
         const getLabelFromValue = (val: string) => {
-            const matched = options.find(opt => opt.value === val);
+            if (!val) return '';
+            if (val.toUpperCase() === 'SELF') {
+                const selfOpt = options.find(opt => opt.value === 'DR. SELF' || opt.value === 'SELF');
+                if (selfOpt) return parseMarkupTag(selfOpt.label).cleanText;
+            }
+            const matched = options.find(opt => opt.value === val || opt.value.toLowerCase() === val.toLowerCase());
             if (!matched) return val;
             return parseMarkupTag(matched.label).cleanText;
         };
@@ -124,12 +130,25 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
             }
         }, [searchTerm, isOpen, filteredOptions.length]);
 
+        const commitCustomValue = (raw: string) => {
+            const trimmed = raw.trim();
+            if (autoDoctorPrefix) {
+                const upper = trimmed.toUpperCase();
+                if (!trimmed || upper === 'DR.' || upper === 'DR. ' || upper === 'DR' || upper === 'D' || upper === 'SELF' || upper === 'DR. SELF' || upper === 'DR.SELF' || upper === 'DR SELF') {
+                    onChange('DR. SELF');
+                    setSearchTerm('DR. SELF');
+                    return;
+                }
+            }
+            onChange(trimmed);
+        };
+
         useEffect(() => {
             const handleClickOutside = (event: MouseEvent) => {
                 if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
                     setIsOpen(false);
                     if (allowCustom) {
-                        onChange(searchTerm);
+                        commitCustomValue(searchTerm);
                     } else {
                         setSearchTerm(getLabelFromValue(value));
                     }
@@ -137,7 +156,7 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
             };
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
-        }, [value, options, allowCustom, searchTerm, onChange]);
+        }, [value, options, allowCustom, searchTerm, onChange, autoDoctorPrefix]);
 
         const handleSelect = (option: Option) => {
             onChange(option.value);
@@ -168,7 +187,7 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                     } else if (allowCustom && searchTerm.trim() !== '') {
                         e.preventDefault();
                         e.stopPropagation();
-                        onChange(searchTerm.trim());
+                        commitCustomValue(searchTerm);
                         setIsOpen(false);
                         return;
                     }
@@ -207,13 +226,44 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                     type="text"
                     value={searchTerm}
                     onChange={e => {
-                        const newVal = e.target.value;
+                        let newVal = e.target.value;
+                        const isDeleting = ((e.nativeEvent as InputEvent)?.inputType?.startsWith('delete')) || (newVal.length < searchTerm.length);
+
+                        if (autoDoctorPrefix && !isDeleting && newVal.trim() !== '') {
+                            const trimmed = newVal.trimStart();
+                            const upper = trimmed.toUpperCase();
+
+                            if (upper === 'D') {
+                                // If they type D all good
+                            } else if (upper.startsWith('DR')) {
+                                // if they type R after that all good
+                            } else {
+                                // If not, If they type first alphabet as anything other than D, add prefix DR. automatically.
+                                const prefix = 'DR. ';
+                                const cursorPos = e.target.selectionStart || newVal.length;
+                                newVal = prefix + trimmed;
+                                const newCursor = cursorPos + prefix.length;
+                                setTimeout(() => {
+                                    if (inputRef.current) {
+                                        inputRef.current.setSelectionRange(newCursor, newCursor);
+                                    }
+                                }, 0);
+                            }
+                        }
+
                         setSearchTerm(newVal);
                         setIsOpen(true);
                     }}
                     onFocus={e => {
                         e.target.select();
                         setIsOpen(true);
+                    }}
+                    onBlur={() => {
+                        if (allowCustom) {
+                            commitCustomValue(searchTerm);
+                        } else {
+                            setSearchTerm(getLabelFromValue(value));
+                        }
                     }}
                     onClick={() => {
                         setIsOpen(true);
@@ -224,7 +274,11 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                     className={className || "w-full p-2 border rounded bg-white cursor-pointer"}
                 />
                 {isOpen && filteredOptions.length > 0 && (
-                    <ul ref={listRef} className={`absolute z-50 w-full min-w-[280px] sm:min-w-[320px] md:min-w-[380px] max-w-[calc(100vw-2rem)] ${isRightAligned ? 'right-0 left-auto' : 'left-0 right-auto'} bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto`}>
+                    <ul 
+                        ref={listRef} 
+                        onMouseDown={e => e.preventDefault()}
+                        className={`absolute z-50 w-full min-w-[280px] sm:min-w-[320px] md:min-w-[380px] max-w-[calc(100vw-2rem)] ${isRightAligned ? 'right-0 left-auto' : 'left-0 right-auto'} bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto`}
+                    >
                         {filteredOptions.map((option, index) => {
                             const { cleanText, tag } = parseMarkupTag(option.label);
                             return (

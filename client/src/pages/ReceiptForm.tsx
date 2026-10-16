@@ -59,7 +59,7 @@ const ReceiptForm: React.FC = () => {
         amount_received: '',
         due_amount_manual: '',
         num_tests: '',
-        referred_by: '',
+        referred_by: 'DR. SELF',
         payment_method: 'Cash',
         notes: '',
     });
@@ -88,11 +88,18 @@ const ReceiptForm: React.FC = () => {
     }, []);
 
     const doctorOptions = useMemo(() => {
-        return doctors.map(doc => ({
-            value: doc.name,
-            label: doc.name,
-            badge: doc.usage_count > 0 ? `${doc.usage_count}` : undefined,
-        }));
+        const filteredDocs = doctors.filter(doc => {
+            const up = doc.name.trim().toUpperCase();
+            return up !== 'SELF' && up !== 'DR. SELF' && up !== 'DR.SELF' && up !== 'DR SELF';
+        });
+        return [
+            { value: 'DR. SELF', label: 'DR. SELF' },
+            ...filteredDocs.map(doc => ({
+                value: doc.name,
+                label: doc.name,
+                badge: doc.usage_count > 0 ? `${doc.usage_count}` : undefined,
+            }))
+        ];
     }, [doctors]);
 
     useEffect(() => {
@@ -169,7 +176,7 @@ const ReceiptForm: React.FC = () => {
                         amount_received: receipt.amount_received.toString(),
                         due_amount_manual: receipt.amount_due.toString(),
                         num_tests: receipt.num_tests?.toString() || '',
-                        referred_by: receipt.referred_by || 'Self',
+                        referred_by: receipt.referred_by || 'DR. SELF',
                         payment_method: receipt.payment_method,
                         notes: receipt.notes || ''
                     });
@@ -409,7 +416,7 @@ const ReceiptForm: React.FC = () => {
         const pkg = packages.find(p => p.name === name);
 
         setItems(prevItems => {
-            const updated = prevItems.map(item =>
+            return prevItems.map(item =>
                 item.id === id ? {
                     ...item,
                     name: pkg ? pkg.name : name,
@@ -418,13 +425,6 @@ const ReceiptForm: React.FC = () => {
                     isFromDb: !!pkg
                 } : item
             );
-
-            // Auto-add row if this is the last row and name is selected
-            const selectedItemIndex = updated.findIndex(i => i.id === id);
-            if (selectedItemIndex === updated.length - 1 && name.trim() !== '') {
-                return [...updated, { id: Date.now() + 1, name: '', mrp: 0, b2b_price: 0, discount: 0, isFromDb: false }];
-            }
-            return updated;
         });
     };
 
@@ -549,7 +549,7 @@ const ReceiptForm: React.FC = () => {
             ...details,
             payment_method: details.payment_method || (isClientMode ? 'Cash' : 'Cash'),
             amount_received: details.amount_received.trim() === '' ? calculations.netPayable.toString() : details.amount_received,
-            referred_by: details.referred_by || 'Self',
+            referred_by: details.referred_by || 'DR. SELF',
             amount_final: calculations.netPayable,
             amount_due: calculations.amountDue,
             total_mrp: calculations.totalMrp,
@@ -607,7 +607,7 @@ const ReceiptForm: React.FC = () => {
                 amount_received: '',
                 due_amount_manual: '',
                 num_tests: '',
-                referred_by: '',
+                referred_by: 'DR. SELF',
                 payment_method: 'Cash',
                 notes: '',
             });
@@ -666,12 +666,12 @@ const ReceiptForm: React.FC = () => {
         }
     };
 
-    const handleTestKeyDown = (e: React.KeyboardEvent, itemId: number) => {
+    const handleTestKeyDown = (e: React.KeyboardEvent, _itemId?: number) => {
         if (e.key === 'Enter') {
             e.preventDefault();
             e.stopPropagation();
-            const item = items.find(i => i.id === itemId);
-            if (item && item.name) {
+            const validItems = items.filter(i => i.name && i.name.trim() !== '');
+            if (validItems.length > 0) {
                 handleSubmit(e as any);
             }
         }
@@ -777,9 +777,10 @@ const ReceiptForm: React.FC = () => {
                         value={details.referred_by || ''}
                         onChange={val => setDetails(prev => ({ ...prev, referred_by: val }))}
                         onKeyDown={e => handleCustomerKeyDown(e, mobileRef)}
-                        placeholder="Self (or search/type doctor...)"
+                        placeholder="DR. SELF (or search/type doctor...)"
                         className="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 bg-white"
                         allowCustom={true}
+                        autoDoctorPrefix={true}
                     />
                 </div>
 
@@ -1078,7 +1079,7 @@ const ReceiptForm: React.FC = () => {
                                     <p className="text-sm text-slate-500">{packageLists.find(p => p.id === parseInt(selectedListId))?.name}</p>
                                 )}
                                 <p className="text-sm font-bold text-slate-600">Payment: {details.payment_method}</p>
-                                <p className="text-sm text-slate-500 font-semibold">Doctor / Reference: {details.referred_by || 'Self'}</p>
+                                <p className="text-sm text-slate-500 font-semibold">Doctor / Reference: {details.referred_by || 'DR. SELF'}</p>
                             </div>
                         </section>
                     </div>

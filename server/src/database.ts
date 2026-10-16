@@ -575,6 +575,13 @@ export function initDb() {
     }
 
 
+    // Clean up any stray self entries from doctors table
+    try {
+        db.prepare("DELETE FROM doctors WHERE UPPER(TRIM(name)) IN ('SELF', 'DR. SELF', 'DR.SELF', 'DR SELF')").run();
+    } catch (e) {
+        // ignore
+    }
+
     // Seed doctors table from existing receipts if empty
     try {
         const docCount = db.prepare("SELECT COUNT(*) as count FROM doctors").get() as { count: number };
@@ -583,7 +590,7 @@ export function initDb() {
                 SELECT DISTINCT referred_by FROM receipts 
                 WHERE referred_by IS NOT NULL 
                   AND TRIM(referred_by) != '' 
-                  AND UPPER(TRIM(referred_by)) != 'SELF'
+                  AND UPPER(TRIM(referred_by)) NOT IN ('SELF', 'DR. SELF', 'DR.SELF', 'DR SELF')
             `).all() as any[];
             const now = new Date().toISOString();
             const insertDoc = db.prepare("INSERT OR IGNORE INTO doctors (name, created_at) VALUES (?, ?)");
