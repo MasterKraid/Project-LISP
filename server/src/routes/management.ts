@@ -5,7 +5,7 @@ import fs from 'fs';
 import ExcelJS from 'exceljs';
 import { db } from '../database';
 import { User, Lab, Receipt, Estimate, Customer, Branch, PackageList, FormattedCustomer, Document, Transaction, Package, LabReport } from '../types';
-import { isAdmin, isAuthenticated, getISTDateTimeString, upload, excelUpload } from './shared';
+import { isAdmin, isAuthenticated, getISTDateTimeString, upload, excelUpload, isStaffOrAdmin } from './shared';
 
 const router = Router();
 
@@ -1479,7 +1479,7 @@ router.get('/admin/transactions/user/:userId', isAdmin, (req, res) => {
 
 // --- LAB REPORTS ENDPOINTS ---
 
-router.post('/reports/upload', isAdmin, (req, res, next) => {
+router.post('/reports/upload', isStaffOrAdmin, (req, res, next) => {
     upload.single('report')(req, res, (err) => {
         if (err) {
             return res.status(400).json({ message: err.message });
@@ -1519,7 +1519,7 @@ router.post('/reports/upload', isAdmin, (req, res, next) => {
     }
 });
 
-router.get('/reports', isAdmin, (req, res) => {
+router.get('/reports', isStaffOrAdmin, (req, res) => {
     try {
         const reports = db.prepare(`
             SELECT lr.*, u.alias, u.username 

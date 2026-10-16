@@ -75,6 +75,15 @@ html.dark .shadow-sm {
   font-weight: 900;
 }
 
+@keyframes progress-shimmer {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 32px 0;
+  }
+}
+
 /* Custom Scrollbars */
 .custom-scrollbar-minimal::-webkit-scrollbar {
   width: 8px !important;

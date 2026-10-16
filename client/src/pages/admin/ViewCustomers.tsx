@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
@@ -17,6 +17,11 @@ const ViewCustomers: React.FC = () => {
     const [selectedCustForModal, setSelectedCustForModal] = useState<FormattedCustomer | null>(null);
     const [modalReports, setModalReports] = useState<LabReport[]>([]);
     const [isOpenModal, setIsOpenModal] = useState(false);
+    const [uploadingCategory, setUploadingCategory] = useState<string | null>(null);
+    const [uploadSuccessMsg, setUploadSuccessMsg] = useState<string | null>(null);
+    const [uploadErrorMsg, setUploadErrorMsg] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const targetUploadCatRef = useRef<string | null>(null);
 
     // Custom hover tooltip state for Customer origin (admin only)
     const [hoveredTooltip, setHoveredTooltip] = useState<{
@@ -235,6 +240,90 @@ const ViewCustomers: React.FC = () => {
         if (!selectedCustForModal) return [];
         return allReceipts.filter(r => r.customer_id === selectedCustForModal.id);
     }, [allReceipts, selectedCustForModal]);
+
+    const handleTriggerCategoryUpload = (category: string) => {
+        targetUploadCatRef.current = category;
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+            fileInputRef.current.click();
+        }
+    };
+
+    const handleUploadFile = async (category: string, file: File) => {
+        if (!selectedCustForModal) return;
+        if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+            alert('Only PDF files are allowed.');
+            return;
+        }
+
+        const resolvedClientId = 
+            customerReceipts[0]?.acting_as_client_id || 
+            customerReceipts[0]?.created_by_user_id || 
+            (selectedCustForModal as any).origin_uid || 
+            selectedCustForModal.created_by_user_id || 
+            user?.id;
+
+        if (!resolvedClientId) {
+            alert('Could not determine client ID for this customer.');
+            return;
+        }
+
+        try {
+            setUploadingCategory(category);
+            setUploadErrorMsg(null);
+            const formData = new FormData();
+            formData.append('client_id', resolvedClientId.toString());
+            formData.append('customer_id', selectedCustForModal.id.toString());
+            formData.append('category', category);
+            formData.append('report', file);
+
+            await apiService.uploadReport(formData);
+
+            let refreshed: LabReport[] = [];
+            if (user?.role === 'ADMIN' || user?.role === 'GENERAL_EMPLOYEE') {
+                refreshed = await apiService.getReportsAdmin();
+            } else if (user?.role === 'CLIENT') {
+                refreshed = await apiService.getReportsClient();
+            }
+            setReports(refreshed);
+            setModalReports(refreshed.filter(r => r.customer_id === selectedCustForModal.id));
+            setUploadSuccessMsg(`Uploaded ${file.name} to ${category}!`);
+            setTimeout(() => setUploadSuccessMsg(null), 3500);
+        } catch (err: any) {
+            console.error('Upload failed:', err);
+            setUploadErrorMsg(err.message || 'Failed to upload report');
+            setTimeout(() => setUploadErrorMsg(null), 4000);
+        } finally {
+            setUploadingCategory(null);
+        }
+    };
+
+    const handleModalFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0 && targetUploadCatRef.current) {
+            const file = e.target.files[0];
+            handleUploadFile(targetUploadCatRef.current, file);
+        }
+    };
+
+    const handleModalDrop = (e: React.DragEvent<HTMLDivElement>, category: string) => {
+        e.preventDefault();
+        if (user?.role !== 'ADMIN') return;
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            const file = e.dataTransfer.files[0];
+            handleUploadFile(category, file);
+        }
+    };
+
+    const handleDeleteModalReport = async (reportId: number) => {
+        if (!window.confirm('Are you sure you want to delete this report?')) return;
+        try {
+            await apiService.deleteReport(reportId);
+            setReports(prev => prev.filter(r => r.id !== reportId));
+            setModalReports(prev => prev.filter(r => r.id !== reportId));
+        } catch (err: any) {
+            alert(err.message || 'Failed to delete report');
+        }
+    };
 
     const categories = [
         { id: 'With Header', label: 'With Header', icon: 'fa-file-invoice', color: 'indigo', pastel: 'bg-indigo-50 border-indigo-150 text-indigo-850 hover:bg-indigo-100/90' },
@@ -518,7 +607,7 @@ const ViewCustomers: React.FC = () => {
 
             {/* Hovering Customer Profile & Reports Modal */}
             {isOpenModal && selectedCustForModal && (
-                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 transition-all">
+                <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-50 p-4 transition-all">
                     <div className="bg-white rounded-2xl border border-slate-100 shadow-2xl max-w-xl w-full max-h-[85vh] flex flex-col overflow-hidden animate-scale-up">
                         {/* Modal Header */}
                         <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
@@ -562,7 +651,7 @@ const ViewCustomers: React.FC = () => {
                                     <span>Demographic Details</span>
                                     <span>Registered: {selectedCustForModal.display_created_at}</span>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4 text-xs font-bold text-slate-650">
+                                <div className="grid grid-cols-2 gap-4 text-xs font-bold text-slate-655">
                                     <div>Email: <span className="text-slate-800 font-medium font-sans">{selectedCustForModal.email || 'N/A'}</span></div>
                                     <div>Mobile: <span className="text-slate-850 font-mono">{selectedCustForModal.mobile || 'N/A'}</span></div>
                                     <div>Gender: <span className="text-slate-850 font-medium">{selectedCustForModal.gender || 'N/A'}</span></div>
@@ -576,7 +665,7 @@ const ViewCustomers: React.FC = () => {
                                     <span>Clinical & Billing Statistics</span>
                                     <span>Visits: {customerReceipts.length}</span>
                                 </div>
-                                <div className="grid grid-cols-2 gap-4 text-xs font-bold text-slate-650">
+                                <div className="grid grid-cols-2 gap-4 text-xs font-bold text-slate-655">
                                     <div>Total Tests Done: <span className="text-indigo-800 text-sm font-black">{customerReceipts.reduce((sum, r) => sum + (r.num_tests || 0), 0)}</span></div>
                                     <div>Doctor Name: <span className="text-slate-850 font-black">{customerReceipts[0]?.referred_by || 'Self'}</span></div>
                                     <div>Total MRP Billing: <span className="text-slate-800 font-black">₹{customerReceipts.reduce((sum, r) => sum + (r.total_mrp || 0), 0).toLocaleString('en-IN')}</span></div>
@@ -590,10 +679,39 @@ const ViewCustomers: React.FC = () => {
 
                             {/* Reports Scroll Section */}
                             <div className="border-t border-slate-100 pt-5 mt-5">
-                                <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-500 flex items-center gap-2 mb-4">
-                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white font-extrabold text-[10px] animate-pulse">!</span>
-                                    <span>Reports & Documents</span>
-                                </h5>
+                                <div className="flex items-center justify-between mb-4">
+                                    <h5 className="text-xs font-extrabold uppercase tracking-widest text-slate-500 flex items-center gap-2">
+                                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-red-600 text-white font-extrabold text-[10px] animate-pulse">!</span>
+                                        <span>Reports & Documents</span>
+                                    </h5>
+                                    {user?.role === 'ADMIN' && (
+                                        <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2.5 py-0.5 rounded-full">
+                                            Admin Upload Active
+                                        </span>
+                                    )}
+                                </div>
+
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    onChange={handleModalFileChange}
+                                    accept=".pdf,application/pdf"
+                                    className="hidden"
+                                />
+
+                                {uploadSuccessMsg && (
+                                    <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+                                        <i className="fa-solid fa-circle-check text-emerald-600"></i>
+                                        <span>{uploadSuccessMsg}</span>
+                                    </div>
+                                )}
+
+                                {uploadErrorMsg && (
+                                    <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold flex items-center gap-2 animate-in fade-in">
+                                        <i className="fa-solid fa-triangle-exclamation text-rose-600"></i>
+                                        <span>{uploadErrorMsg}</span>
+                                    </div>
+                                )}
 
                                 {isReportViewBlocked && (
                                     <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-700 text-xs font-bold flex items-center gap-2.5">
@@ -605,66 +723,147 @@ const ViewCustomers: React.FC = () => {
                                 <div className="grid grid-cols-2 gap-4">
                                     {categories.map(cat => {
                                         const files = groupedModalReports[cat.id] || [];
+                                        const isUploading = uploadingCategory === cat.id;
+
+                                        if (files.length === 0) {
+                                            if (user?.role === 'ADMIN') {
+                                                return (
+                                                    <div 
+                                                        key={cat.id}
+                                                        onDragOver={(e) => e.preventDefault()}
+                                                        onDrop={(e) => handleModalDrop(e, cat.id)}
+                                                        onClick={() => !isUploading && handleTriggerCategoryUpload(cat.id)}
+                                                        className="border-2 border-dashed border-slate-300 hover:border-indigo-500 rounded-2xl p-4 transition-all text-center space-y-2 flex flex-col items-center justify-center min-h-[120px] bg-slate-50/70 hover:bg-indigo-50/40 cursor-pointer hover:scale-[1.02] group"
+                                                    >
+                                                        <div className="w-9 h-9 rounded-full bg-white shadow-sm flex items-center justify-center shrink-0 text-indigo-600 group-hover:scale-110 transition-transform">
+                                                            {isUploading ? (
+                                                                <i className="fa-solid fa-spinner fa-spin text-sm"></i>
+                                                            ) : (
+                                                                <i className={`fa-solid ${cat.icon} text-sm`}></i>
+                                                            )}
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-700">{cat.label}</div>
+                                                            <div className="text-[9px] font-bold text-slate-400 mt-0.5">0 Documents</div>
+                                                        </div>
+                                                        {isUploading ? (
+                                                            <span className="text-[9px] font-bold text-indigo-600 flex items-center gap-1">
+                                                                <i className="fa-solid fa-spinner fa-spin text-[8px]"></i>
+                                                                <span>Uploading...</span>
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-[9px] font-bold text-indigo-600 group-hover:text-indigo-800 flex items-center gap-1">
+                                                                <i className="fa-solid fa-cloud-arrow-up text-[9px]"></i>
+                                                                <span>Click or Drop PDF</span>
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                );
+                                            }
+
+                                            return (
+                                                <div 
+                                                    key={cat.id} 
+                                                    className="border border-slate-100 rounded-2xl p-4 text-center space-y-2 flex flex-col items-center justify-center min-h-[120px] bg-slate-50/50 text-slate-400 opacity-60 cursor-not-allowed"
+                                                >
+                                                    <div className="w-9 h-9 rounded-full bg-white/95 shadow-sm flex items-center justify-center shrink-0">
+                                                        <i className={`fa-solid ${cat.icon} text-sm`}></i>
+                                                    </div>
+                                                    <div>
+                                                        <div className="text-[11px] font-extrabold uppercase tracking-wider">{cat.label}</div>
+                                                        <div className="text-[9px] font-bold opacity-75 mt-0.5">0 Document(s)</div>
+                                                    </div>
+                                                </div>
+                                            );
+                                        }
+
                                         const pastelColors = {
-                                            indigo: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-indigo-50 border-indigo-100 text-indigo-800 hover:bg-indigo-100/70 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
-                                            amber: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-amber-50 border-amber-100 text-amber-800 hover:bg-amber-100/70 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
-                                            emerald: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-emerald-50 border-emerald-100 text-emerald-800 hover:bg-emerald-100/70 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed',
-                                            slate: files.length > 0 ? (isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-slate-100/80 border-slate-200 text-slate-800 hover:bg-slate-200/95 shadow-sm') : 'bg-slate-50/50 border-slate-100 text-slate-400 opacity-60 cursor-not-allowed'
+                                            indigo: isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-indigo-50 border-indigo-100 text-indigo-800 hover:bg-indigo-100/70 shadow-sm',
+                                            amber: isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-amber-50 border-amber-100 text-amber-800 hover:bg-amber-100/70 shadow-sm',
+                                            emerald: isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-emerald-50 border-emerald-100 text-emerald-800 hover:bg-emerald-100/70 shadow-sm',
+                                            slate: isReportViewBlocked ? 'bg-slate-50 border-slate-200 text-slate-500' : 'bg-slate-100/80 border-slate-200 text-slate-800 hover:bg-slate-200/95 shadow-sm'
                                         }[cat.color];
 
                                         return (
                                             <div 
                                                 key={cat.id} 
-                                                onClick={() => files.length > 0 && !isReportViewBlocked && handleViewReport(files[0])}
-                                                className={`border rounded-2xl p-4 transition-all text-center space-y-2 flex flex-col items-center justify-center min-h-[120px] ${pastelColors} ${files.length > 0 ? 'cursor-pointer hover:scale-[1.02]' : ''}`}
+                                                onDragOver={(e) => { if (user?.role === 'ADMIN') e.preventDefault(); }}
+                                                onDrop={(e) => { if (user?.role === 'ADMIN') handleModalDrop(e, cat.id); }}
+                                                onClick={() => !isReportViewBlocked && handleViewReport(files[0])}
+                                                className={`border rounded-2xl p-4 transition-all text-center space-y-2 flex flex-col items-center justify-center min-h-[120px] ${pastelColors} cursor-pointer hover:scale-[1.02]`}
                                             >
-                                                <div className="w-9 h-9 rounded-full bg-white/95 shadow-sm flex items-center justify-center shrink-0">
-                                                    <i className={`fa-solid ${cat.icon} text-sm`}></i>
+                                                <div className="w-full flex items-center justify-between">
+                                                    <div className="w-8 h-8 rounded-full bg-white/95 shadow-sm flex items-center justify-center shrink-0">
+                                                        <i className={`fa-solid ${cat.icon} text-xs`}></i>
+                                                    </div>
+                                                    {user?.role === 'ADMIN' && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleTriggerCategoryUpload(cat.id);
+                                                            }}
+                                                            disabled={isUploading}
+                                                            className="px-2 py-0.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[9px] font-black uppercase tracking-wider flex items-center gap-1 shadow-xs transition-all active:scale-95 disabled:opacity-50"
+                                                            title="Upload new document to this category"
+                                                        >
+                                                            <i className={`fa-solid ${isUploading ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-up'} text-[8px]`}></i>
+                                                            <span>{isUploading ? 'Uploading...' : 'Upload'}</span>
+                                                        </button>
+                                                    )}
                                                 </div>
+
                                                 <div>
                                                     <div className="text-[11px] font-extrabold uppercase tracking-wider">{cat.label}</div>
                                                     <div className="text-[9px] font-bold opacity-75 mt-0.5">{files.length} Document(s)</div>
                                                 </div>
 
-                                                {files.length > 0 && (
-                                                    <div className="w-full mt-2 space-y-1.5" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
-                                                        {files.map(report => (
-                                                            <div key={report.id} className="bg-white/95 p-1.5 rounded-lg border border-white/50 text-[10px] text-slate-800 font-bold flex items-center justify-between gap-1 shadow-sm hover:bg-white transition-all">
-                                                                <div className="truncate flex-1 text-left flex items-center gap-1">
-                                                                    {!report.is_read && (
-                                                                        <span 
-                                                                            className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-red-600 text-white font-extrabold text-[8px] animate-pulse border border-red-500 shrink-0 select-none"
-                                                                            title="Unread Report"
-                                                                        >
-                                                                            !
-                                                                        </span>
-                                                                    )}
-                                                                    <span className="truncate">{report.uploaded_at.split(' | ')[0]}</span>
-                                                                </div>
-                                                                <div className="flex gap-1 shrink-0">
-                                                                    <button
-                                                                        onClick={() => handleViewReport(report)}
-                                                                        className={`w-5 h-5 flex items-center justify-center rounded border border-slate-100 transition-colors animate-none ${
-                                                                            isReportViewBlocked ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50 hover:bg-indigo-600 hover:text-white'
-                                                                        }`}
-                                                                        title={isReportViewBlocked ? "Viewing Locked" : "View PDF"}
+                                                <div className="w-full mt-2 space-y-1.5" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                                                    {files.map(report => (
+                                                        <div key={report.id} className="bg-white/95 p-1.5 rounded-lg border border-white/50 text-[10px] text-slate-800 font-bold flex items-center justify-between gap-1 shadow-sm hover:bg-white transition-all">
+                                                            <div className="truncate flex-1 text-left flex items-center gap-1">
+                                                                {!report.is_read && (
+                                                                    <span 
+                                                                        className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full bg-red-600 text-white font-extrabold text-[8px] animate-pulse border border-red-500 shrink-0 select-none"
+                                                                        title="Unread Report"
                                                                     >
-                                                                        <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-eye'} text-[8px]`}></i>
-                                                                    </button>
-                                                                    <button
-                                                                        onClick={() => handleDownloadReport(report)}
-                                                                        className={`w-5 h-5 flex items-center justify-center rounded border border-slate-100 transition-colors animate-none ${
-                                                                            isReportViewBlocked ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50 hover:bg-green-600 hover:text-white'
-                                                                        }`}
-                                                                        title={isReportViewBlocked ? "Download Locked" : "Download PDF"}
-                                                                    >
-                                                                        <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-download'} text-[8px]`}></i>
-                                                                    </button>
-                                                                </div>
+                                                                        !
+                                                                    </span>
+                                                                )}
+                                                                <span className="truncate">{report.uploaded_at.split(' | ')[0]}</span>
                                                             </div>
-                                                        ))}
-                                                    </div>
-                                                )}
+                                                            <div className="flex gap-1 shrink-0">
+                                                                <button
+                                                                    onClick={() => handleViewReport(report)}
+                                                                    className={`w-5 h-5 flex items-center justify-center rounded border border-slate-100 transition-colors animate-none ${
+                                                                        isReportViewBlocked ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50 hover:bg-indigo-600 hover:text-white'
+                                                                    }`}
+                                                                    title={isReportViewBlocked ? "Viewing Locked" : "View PDF"}
+                                                                >
+                                                                    <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-eye'} text-[8px]`}></i>
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleDownloadReport(report)}
+                                                                    className={`w-5 h-5 flex items-center justify-center rounded border border-slate-100 transition-colors animate-none ${
+                                                                        isReportViewBlocked ? 'bg-slate-100 text-slate-400 cursor-not-allowed' : 'bg-slate-50 hover:bg-green-600 hover:text-white'
+                                                                    }`}
+                                                                    title={isReportViewBlocked ? "Download Locked" : "Download PDF"}
+                                                                >
+                                                                    <i className={`fa-solid ${isReportViewBlocked ? 'fa-lock' : 'fa-download'} text-[8px]`}></i>
+                                                                </button>
+                                                                {user?.role === 'ADMIN' && (
+                                                                    <button
+                                                                        onClick={() => handleDeleteModalReport(report.id)}
+                                                                        className="w-5 h-5 flex items-center justify-center rounded border border-slate-100 bg-slate-50 hover:bg-red-600 hover:text-white text-slate-400 transition-colors animate-none"
+                                                                        title="Delete Report"
+                                                                    >
+                                                                        <i className="fa-solid fa-trash-can text-[8px]"></i>
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ))}
+                                                </div>
                                             </div>
                                         );
                                     })}

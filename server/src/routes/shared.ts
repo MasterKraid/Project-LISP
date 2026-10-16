@@ -33,6 +33,15 @@ export const isAdmin = (req: Request, res: Response, next: NextFunction) => {
     }
 };
 
+export const isStaffOrAdmin = (req: Request, res: Response, next: NextFunction) => {
+    const user = (req.session as any).user as User;
+    if (user && (user.role === 'ADMIN' || user.role === 'DATA_ENTRY' || user.role === 'GENERAL_EMPLOYEE')) {
+        next();
+    } else {
+        res.status(403).json({ message: "Forbidden: Staff or Administrator access required." });
+    }
+};
+
 const uploadDir = path.join(__dirname, '..', '..', 'public', 'lab_reports');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
