@@ -30,6 +30,18 @@ export interface PackageList {
     has_red_outline?: boolean;
     has_yellow_outline?: boolean;
     unconfigured_pricing_count?: number;
+    critical_pricing_count?: number;
+    missing_b2b_count?: number;
+    spacing_mismatch_count?: number;
+    spacing_mismatches?: { child_test: string; mother_test?: string; reason: string }[];
+    has_spacing_mismatch?: boolean;
+    extra_tests_count?: number;
+    extra_tests?: { child_test: string }[];
+    has_extra_tests?: boolean;
+    mother_mismatch_count?: number;
+    mother_mismatches?: { child_test: string; mother_test?: string; reason: string }[];
+    mother_list_name?: string | null;
+    has_mother_mismatch?: boolean;
 }
 
 export interface MasterPackage {
@@ -206,4 +218,18 @@ export interface ComparisonPrice {
     test_id: number;
     lab_id: number;
     price: number;
+}
+
+export interface Doctor {
+    id: number;
+    name: string;
+    created_at?: string;
+    usage_count: number;
+}
+
+export interface DoctorDuplicateGroup {
+    key: string;
+    canonical_name: string;
+    total_usage_count: number;
+    doctors: Doctor[];
 }

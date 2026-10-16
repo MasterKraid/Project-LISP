@@ -74,22 +74,60 @@ router.get('/package-lists', isAdmin, (req, res) => {
         const lists = db.prepare(`
             SELECT p.*, 
                 (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id) as package_count,
-                (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id AND (mrp <= 0 OR b2b_price <= 0 OR b2b_price > mrp)) as unconfigured_pricing_count
+                (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id AND (mrp <= 0 OR b2b_price <= 0 OR b2b_price > mrp)) as unconfigured_pricing_count,
+                (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id AND (mrp <= 0 OR b2b_price > mrp)) as critical_pricing_count,
+                (SELECT COUNT(*) FROM packages WHERE package_list_id = p.id AND b2b_price <= 0 AND mrp > 0) as missing_b2b_count
             FROM package_lists p
         `).all() as any[];
 
         // Fetch all master packages
         const masterPackages = db.prepare('SELECT id, name FROM master_packages').all() as any[];
 
+        // Fetch lab-to-list mappings to associate child ratelists with their lab's mother ratelist
+        const labAssignments = db.prepare(`
+            SELECT lpl.lab_id, lpl.package_list_id, l.name as lab_name 
+            FROM lab_package_lists lpl 
+            JOIN labs l ON lpl.lab_id = l.id
+        `).all() as { lab_id: number; package_list_id: number; lab_name: string }[];
+
+        const labToLists = new Map<number, number[]>();
+        const listToLabs = new Map<number, { lab_id: number; lab_name: string }[]>();
+        for (const la of labAssignments) {
+            if (!labToLists.has(la.lab_id)) labToLists.set(la.lab_id, []);
+            labToLists.get(la.lab_id)!.push(la.package_list_id);
+
+            if (!listToLabs.has(la.package_list_id)) listToLabs.set(la.package_list_id, []);
+            listToLabs.get(la.package_list_id)!.push({ lab_id: la.lab_id, lab_name: la.lab_name });
+        }
+
+        const packagesCache = new Map<number, { name: string; code_name?: string }[]>();
+        const getListPackages = (listId: number) => {
+            if (!packagesCache.has(listId)) {
+                const pkgs = db.prepare('SELECT name, code_name FROM packages WHERE package_list_id = ?').all(listId) as any[];
+                packagesCache.set(listId, pkgs);
+            }
+            return packagesCache.get(listId)!;
+        };
+
+        const normalizeTestName = (str: string) => {
+            return str
+                .toLowerCase()
+                .replace(/[^a-z0-9]/g, '')
+                .trim();
+        };
+
         const enriched = lists.map(list => {
             const isMother = isMotherRatelistName(list.name);
             let missingMasterPackages: string[] = [];
+            let spacingMismatches: { child_test: string; mother_test?: string; reason: string }[] = [];
+            let extraTests: { child_test: string }[] = [];
+            let motherListName: string | null = null;
 
             if (isMother && masterPackages.length > 0) {
                 // Get all package names and code_names in this list
-                const listPackages = db.prepare('SELECT name, code_name FROM packages WHERE package_list_id = ?').all(list.id) as any[];
+                const listPackages = getListPackages(list.id);
                 const listNamesSet = new Set(listPackages.map(p => p.name.trim().toUpperCase()));
-                const listCodesSet = new Set(listPackages.filter(p => p.code_name).map(p => p.code_name.trim().toUpperCase()));
+                const listCodesSet = new Set(listPackages.filter(p => p.code_name).map(p => (p.code_name as string).trim().toUpperCase()));
 
                 // For each master package, check if in list
                 masterPackages.forEach(mp => {
@@ -103,15 +141,68 @@ router.get('/package-lists', isAdmin, (req, res) => {
                         missingMasterPackages.push(mp.name);
                     }
                 });
+            } else if (!isMother) {
+                const assignedLabs = listToLabs.get(list.id) || [];
+                for (const alab of assignedLabs) {
+                    const siblingListIds = labToLists.get(alab.lab_id) || [];
+                    const motherList = lists.find(l => siblingListIds.includes(l.id) && isMotherRatelistName(l.name));
+                    if (motherList && motherList.id !== list.id) {
+                        motherListName = motherList.name;
+                        const childPkgs = getListPackages(list.id);
+                        const motherPkgs = getListPackages(motherList.id);
+
+                        const motherExactNames = new Set(motherPkgs.map(p => p.name.trim().toUpperCase()));
+                        const motherNormMap = new Map<string, string>();
+                        for (const mp of motherPkgs) {
+                            motherNormMap.set(normalizeTestName(mp.name), mp.name);
+                        }
+
+                        for (const cp of childPkgs) {
+                            const exactName = cp.name.trim().toUpperCase();
+                            if (!motherExactNames.has(exactName)) {
+                                const normName = normalizeTestName(cp.name);
+                                const similarMotherName = motherNormMap.get(normName);
+                                if (similarMotherName) {
+                                    spacingMismatches.push({
+                                        child_test: cp.name,
+                                        mother_test: similarMotherName,
+                                        reason: `Spacing mismatch with "${similarMotherName}" in Mother Rate`
+                                    });
+                                } else {
+                                    extraTests.push({
+                                        child_test: cp.name
+                                    });
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
             }
+
+            const hasCriticalPricing = (list.critical_pricing_count || 0) > 0;
+            const hasMissingB2b = (list.missing_b2b_count || 0) > 0;
+            const hasMissingMaster = isMother && missingMasterPackages.length > 0;
 
             return {
                 ...list,
                 is_mother_ratelist: isMother,
                 missing_master_count: missingMasterPackages.length,
                 missing_master_packages: missingMasterPackages,
-                has_red_outline: isMother && missingMasterPackages.length > 0,
-                has_yellow_outline: (list.unconfigured_pricing_count || 0) > 0
+                critical_pricing_count: list.critical_pricing_count || 0,
+                missing_b2b_count: list.missing_b2b_count || 0,
+                has_red_outline: hasMissingMaster || hasCriticalPricing,
+                has_yellow_outline: hasMissingB2b || ((list.unconfigured_pricing_count || 0) > 0 && !hasCriticalPricing),
+                spacing_mismatch_count: spacingMismatches.length,
+                spacing_mismatches: spacingMismatches,
+                has_spacing_mismatch: spacingMismatches.length > 0,
+                extra_tests_count: extraTests.length,
+                extra_tests: extraTests,
+                has_extra_tests: extraTests.length > 0,
+                mother_mismatch_count: spacingMismatches.length,
+                mother_mismatches: spacingMismatches,
+                mother_list_name: motherListName,
+                has_mother_mismatch: spacingMismatches.length > 0
             };
         });
 
@@ -249,12 +340,269 @@ router.post('/package-lists/:id/accept-master-packages', isAdmin, (req, res) => 
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 
-// --- DOCTOR AUTOCOMPLETE & ADMIN SETTINGS ---
+// --- DOCTOR DIRECTORY & MANAGEMENT ---
+
+export function normalizeDoctorKey(name: string): string {
+    return name
+        .toLowerCase()
+        .replace(/^(?:dr|doctor)\.?\s*/i, '')
+        .replace(/[^a-z0-9]/gi, '');
+}
+
+export function pickCanonicalDoctorName(group: { id: number; name: string; usage_count?: number }[]): string {
+    let best = group[0];
+    let bestScore = -1;
+    for (const d of group) {
+        let score = (d.usage_count || 0) * 10;
+        const isStandardPrefix = /^DR\.\s+[A-Z0-9]/i.test(d.name);
+        const hasDoubleSpace = /\s{2,}/.test(d.name);
+        const hasSpaceBeforeDot = /DR\s+\./i.test(d.name);
+        const hasNoSpaceAfterDot = /^DR\.[A-Z0-9]/i.test(d.name);
+
+        if (isStandardPrefix && !hasDoubleSpace) score += 50;
+        else if (isStandardPrefix) score += 30;
+        else if (/^DR\s+[A-Z0-9]/i.test(d.name)) score += 20;
+
+        if (hasDoubleSpace) score -= 25;
+        if (hasSpaceBeforeDot) score -= 30;
+        if (hasNoSpaceAfterDot) score -= 15;
+
+        if (score > bestScore) {
+            bestScore = score;
+            best = d;
+        }
+    }
+    const raw = best.name.replace(/^(?:dr|doctor)\.?\s*/i, '').replace(/\s+/g, ' ').trim().toUpperCase();
+    return `DR. ${raw}`;
+}
 
 router.get('/doctors', isAuthenticated, (req, res) => {
     try {
-        const doctors = db.prepare('SELECT name FROM doctors ORDER BY name ASC').all().map((d: any) => d.name);
+        const doctors = db.prepare(`
+            SELECT 
+                d.id, 
+                d.name, 
+                d.created_at,
+                (SELECT COUNT(*) FROM receipts r WHERE UPPER(TRIM(r.referred_by)) = UPPER(TRIM(d.name))) as usage_count
+            FROM doctors d
+            ORDER BY usage_count DESC, d.name ASC
+        `).all();
         res.json(doctors);
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.get('/doctors/duplicates', isAuthenticated, (req, res) => {
+    try {
+        const doctors = db.prepare(`
+            SELECT 
+                d.id, 
+                d.name, 
+                d.created_at,
+                (SELECT COUNT(*) FROM receipts r WHERE UPPER(TRIM(r.referred_by)) = UPPER(TRIM(d.name))) as usage_count
+            FROM doctors d
+            ORDER BY d.name ASC
+        `).all() as any[];
+
+        const map = new Map<string, any[]>();
+        for (const d of doctors) {
+            const k = normalizeDoctorKey(d.name);
+            if (!map.has(k)) map.set(k, []);
+            map.get(k)!.push(d);
+        }
+
+        const groups: any[] = [];
+        for (const [k, grp] of map.entries()) {
+            if (grp.length > 1) {
+                const canonicalName = pickCanonicalDoctorName(grp);
+                const totalUsage = grp.reduce((acc, doc) => acc + (doc.usage_count || 0), 0);
+                groups.push({
+                    key: k,
+                    canonical_name: canonicalName,
+                    total_usage_count: totalUsage,
+                    doctors: grp
+                });
+            }
+        }
+
+        groups.sort((a, b) => b.total_usage_count - a.total_usage_count);
+
+        res.json({
+            count: groups.length,
+            groups
+        });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/doctors/merge', isAuthenticated, (req, res) => {
+    try {
+        const { target_name, doctor_ids } = req.body;
+        if (!doctor_ids || !Array.isArray(doctor_ids) || doctor_ids.length < 2) {
+            return res.status(400).json({ message: 'At least two doctor IDs are required to merge.' });
+        }
+        if (!target_name || typeof target_name !== 'string' || !target_name.trim()) {
+            return res.status(400).json({ message: 'Target doctor name is required.' });
+        }
+
+        const canonicalName = target_name.trim();
+        const placeholders = doctor_ids.map(() => '?').join(',');
+        const existingDocs = db.prepare(`SELECT * FROM doctors WHERE id IN (${placeholders})`).all(...doctor_ids) as any[];
+        if (existingDocs.length < 2) {
+            return res.status(400).json({ message: 'Could not find sufficient doctor records for the provided IDs.' });
+        }
+
+        const mergeTx = db.transaction(() => {
+            let keepDoc = existingDocs.find(d => d.name.toUpperCase() === canonicalName.toUpperCase());
+            if (!keepDoc) {
+                keepDoc = existingDocs[0];
+            }
+
+            const deleteIds = existingDocs.filter(d => d.id !== keepDoc.id).map(d => d.id);
+            if (deleteIds.length > 0) {
+                const delPlaceholders = deleteIds.map(() => '?').join(',');
+                db.prepare(`DELETE FROM doctors WHERE id IN (${delPlaceholders})`).run(...deleteIds);
+            }
+
+            if (keepDoc.name !== canonicalName) {
+                db.prepare('UPDATE doctors SET name = ? WHERE id = ?').run(canonicalName, keepDoc.id);
+            }
+
+            let affectedReceipts = 0;
+            for (const doc of existingDocs) {
+                const rRes = db.prepare('UPDATE receipts SET referred_by = ? WHERE UPPER(TRIM(referred_by)) = UPPER(TRIM(?))').run(canonicalName, doc.name);
+                db.prepare('UPDATE estimates SET referred_by = ? WHERE UPPER(TRIM(referred_by)) = UPPER(TRIM(?))').run(canonicalName, doc.name);
+                affectedReceipts += rRes.changes;
+            }
+
+            return {
+                keep_id: keepDoc.id,
+                canonical_name: canonicalName,
+                deleted_ids: deleteIds,
+                affected_receipts: affectedReceipts
+            };
+        });
+
+        const result = mergeTx();
+        res.json({ message: 'Doctors merged successfully', ...result });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/doctors/merge-duplicates', isAuthenticated, (req, res) => {
+    try {
+        const doctors = db.prepare(`
+            SELECT 
+                d.id, 
+                d.name, 
+                d.created_at,
+                (SELECT COUNT(*) FROM receipts r WHERE UPPER(TRIM(r.referred_by)) = UPPER(TRIM(d.name))) as usage_count
+            FROM doctors d
+            ORDER BY d.name ASC
+        `).all() as any[];
+
+        const map = new Map<string, any[]>();
+        for (const d of doctors) {
+            const k = normalizeDoctorKey(d.name);
+            if (!map.has(k)) map.set(k, []);
+            map.get(k)!.push(d);
+        }
+
+        let mergedGroups = 0;
+        let deletedDoctorsCount = 0;
+        let updatedReceiptsCount = 0;
+
+        const mergeAllTx = db.transaction(() => {
+            for (const [k, grp] of map.entries()) {
+                if (grp.length > 1) {
+                    const canonicalName = pickCanonicalDoctorName(grp);
+
+                    let keepDoc = grp.find(d => d.name.toUpperCase() === canonicalName.toUpperCase());
+                    if (!keepDoc) {
+                        keepDoc = grp[0];
+                    }
+
+                    const deleteIds = grp.filter(d => d.id !== keepDoc.id).map(d => d.id);
+                    if (deleteIds.length > 0) {
+                        const delPlaceholders = deleteIds.map(() => '?').join(',');
+                        db.prepare(`DELETE FROM doctors WHERE id IN (${delPlaceholders})`).run(...deleteIds);
+                        deletedDoctorsCount += deleteIds.length;
+                    }
+
+                    if (keepDoc.name !== canonicalName) {
+                        db.prepare('UPDATE doctors SET name = ? WHERE id = ?').run(canonicalName, keepDoc.id);
+                    }
+
+                    for (const doc of grp) {
+                        const rRes = db.prepare('UPDATE receipts SET referred_by = ? WHERE UPPER(TRIM(referred_by)) = UPPER(TRIM(?))').run(canonicalName, doc.name);
+                        db.prepare('UPDATE estimates SET referred_by = ? WHERE UPPER(TRIM(referred_by)) = UPPER(TRIM(?))').run(canonicalName, doc.name);
+                        updatedReceiptsCount += rRes.changes;
+                    }
+
+                    mergedGroups++;
+                }
+            }
+        });
+
+        mergeAllTx();
+
+        res.json({
+            message: `Successfully merged ${mergedGroups} duplicate groups. ${deletedDoctorsCount} redundant doctor records removed, and ${updatedReceiptsCount} receipts updated.`,
+            merged_groups_count: mergedGroups,
+            deleted_doctors_count: deletedDoctorsCount,
+            updated_receipts_count: updatedReceiptsCount
+        });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/doctors', isAuthenticated, (req, res) => {
+    try {
+        let { name } = req.body;
+        if (!name || typeof name !== 'string' || !name.trim()) {
+            return res.status(400).json({ message: 'Doctor name is required.' });
+        }
+        name = name.trim();
+        const existing = db.prepare('SELECT id FROM doctors WHERE UPPER(name) = UPPER(?)').get(name) as any;
+        if (existing) {
+            return res.status(400).json({ message: 'A doctor with this name already exists.' });
+        }
+        const result = db.prepare('INSERT INTO doctors (name, created_at) VALUES (?, ?)').run(name, getISTDateTimeString());
+        res.status(201).json({ id: result.lastInsertRowid, name, usage_count: 0 });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.put('/doctors/:id', isAuthenticated, (req, res) => {
+    try {
+        const id = req.params.id;
+        let { name, update_receipts } = req.body;
+        if (!name || typeof name !== 'string' || !name.trim()) {
+            return res.status(400).json({ message: 'Doctor name is required.' });
+        }
+        name = name.trim();
+        const oldDoc = db.prepare('SELECT * FROM doctors WHERE id = ?').get(id) as any;
+        if (!oldDoc) {
+            return res.status(404).json({ message: 'Doctor not found.' });
+        }
+        db.prepare('UPDATE doctors SET name = ? WHERE id = ?').run(name, id);
+        if (update_receipts) {
+            db.prepare('UPDATE receipts SET referred_by = ? WHERE UPPER(TRIM(referred_by)) = UPPER(TRIM(?))').run(name, oldDoc.name);
+            db.prepare('UPDATE estimates SET referred_by = ? WHERE UPPER(TRIM(referred_by)) = UPPER(TRIM(?))').run(name, oldDoc.name);
+        }
+        const updated = db.prepare(`
+            SELECT 
+                d.id, 
+                d.name, 
+                d.created_at,
+                (SELECT COUNT(*) FROM receipts r WHERE UPPER(TRIM(r.referred_by)) = UPPER(TRIM(d.name))) as usage_count
+            FROM doctors d
+            WHERE d.id = ?
+        `).get(id);
+        res.json({ message: 'Doctor updated successfully', doctor: updated });
+    } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.delete('/doctors/:id', isAdmin, (req, res) => {
+    try {
+        const id = req.params.id;
+        db.prepare('DELETE FROM doctors WHERE id = ?').run(id);
+        res.json({ message: 'Doctor removed from database.' });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });
 

@@ -4,6 +4,7 @@ interface Option {
     value: string;
     label: string;
     code_name?: string;
+    badge?: string | number;
 }
 
 interface SearchableDropdownProps {
@@ -14,6 +15,8 @@ interface SearchableDropdownProps {
     disabled?: boolean;
     onKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
     align?: 'left' | 'right' | 'auto';
+    allowCustom?: boolean;
+    className?: string;
 }
 
 export interface SearchableDropdownHandle {
@@ -36,8 +39,15 @@ function parseMarkupTag(label: string) {
     return { cleanText: label, tag: null };
 }
 
+function normalizeSearchStr(str: string): string {
+    return str
+        .toLowerCase()
+        .replace(/^dr[\.\s]+/i, '')
+        .replace(/[^a-z0-9]/g, '');
+}
+
 const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdownProps>(
-    ({ options, value, onChange, placeholder, disabled, onKeyDown, align = 'auto' }, ref) => {
+    ({ options, value, onChange, placeholder, disabled, onKeyDown, align = 'auto', allowCustom = false, className }, ref) => {
         const getLabelFromValue = (val: string) => {
             const matched = options.find(opt => opt.value === val);
             if (!matched) return val;
@@ -84,12 +94,26 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                 if (searchTerm === currentLabel || searchTerm === '') {
                     return true;
                 }
+                const termLower = searchTerm.toLowerCase().trim();
+                const termNorm = normalizeSearchStr(searchTerm);
+
+                // Direct substring on raw label
+                if (option.label.toLowerCase().includes(termLower)) return true;
+
+                // Substring on clean markup text
                 const clean = parseMarkupTag(option.label).cleanText;
-                return (
-                    option.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    clean.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                    (option.code_name && option.code_name.toLowerCase().includes(searchTerm.toLowerCase()))
-                );
+                if (clean.toLowerCase().includes(termLower)) return true;
+
+                // Code name match
+                if (option.code_name && option.code_name.toLowerCase().includes(termLower)) return true;
+
+                // Normalized substring match (e.g., typing "bisakha" matches "DR. BISAKHA PAL")
+                if (termNorm.length > 0) {
+                    const cleanNorm = normalizeSearchStr(clean);
+                    if (cleanNorm.includes(termNorm)) return true;
+                }
+
+                return false;
             });
 
         useEffect(() => {
@@ -104,12 +128,16 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
             const handleClickOutside = (event: MouseEvent) => {
                 if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
                     setIsOpen(false);
-                    setSearchTerm(getLabelFromValue(value));
+                    if (allowCustom) {
+                        onChange(searchTerm);
+                    } else {
+                        setSearchTerm(getLabelFromValue(value));
+                    }
                 }
             };
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
-        }, [value, options]);
+        }, [value, options, allowCustom, searchTerm, onChange]);
 
         const handleSelect = (option: Option) => {
             onChange(option.value);
@@ -136,6 +164,12 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                         e.preventDefault();
                         e.stopPropagation();
                         handleSelect(filteredOptions[targetIndex]);
+                        return;
+                    } else if (allowCustom && searchTerm.trim() !== '') {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onChange(searchTerm.trim());
+                        setIsOpen(false);
                         return;
                     }
                 } else if (e.key === 'Escape') {
@@ -187,7 +221,7 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                     onKeyDown={handleKeyDown}
                     placeholder={placeholder}
                     disabled={disabled}
-                    className="w-full p-2 border rounded bg-white cursor-pointer"
+                    className={className || "w-full p-2 border rounded bg-white cursor-pointer"}
                 />
                 {isOpen && filteredOptions.length > 0 && (
                     <ul ref={listRef} className={`absolute z-50 w-full min-w-[280px] sm:min-w-[320px] md:min-w-[380px] max-w-[calc(100vw-2rem)] ${isRightAligned ? 'right-0 left-auto' : 'left-0 right-auto'} bg-white border mt-1 rounded shadow-lg max-h-60 overflow-y-auto`}>
@@ -211,6 +245,11 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                                     {option.code_name && (
                                         <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${index === highlightedIndex ? 'bg-blue-500 text-blue-100' : 'bg-slate-100 text-slate-500'}`}>
                                             {option.code_name}
+                                        </span>
+                                    )}
+                                    {option.badge !== undefined && (
+                                        <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 ${index === highlightedIndex ? 'bg-blue-500 text-white' : 'bg-blue-50 text-blue-700 border border-blue-200'}`}>
+                                            {option.badge}
                                         </span>
                                     )}
                                 </li>

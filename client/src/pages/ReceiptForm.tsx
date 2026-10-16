@@ -4,7 +4,7 @@ import PageHeader from '../components/PageHeader';
 import CleanSelect from '../components/CleanSelect';
 import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
-import { Customer, Lab, PackageList, Package } from '../types';
+import { Customer, Lab, PackageList, Package, Doctor } from '../types';
 import SearchableDropdown, { SearchableDropdownHandle } from '../components/SearchableDropdown';
 import { useRef } from 'react';
 
@@ -33,7 +33,7 @@ const ReceiptForm: React.FC = () => {
     const [labs, setLabs] = useState<Lab[]>([]);
     const [packageLists, setPackageLists] = useState<PackageList[]>([]);
     const [packages, setPackages] = useState<Package[]>([]);
-    const [doctorSuggestions, setDoctorSuggestions] = useState<string[]>([]);
+    const [doctors, setDoctors] = useState<Doctor[]>([]);
     const editPendingListId = useRef<string | null>(null);
 
     // Form states
@@ -79,42 +79,21 @@ const ReceiptForm: React.FC = () => {
     const nameRef = useRef<HTMLInputElement>(null);
     const mobileRef = useRef<HTMLInputElement>(null);
     const ageRef = useRef<HTMLInputElement>(null);
-    const referredByRef = useRef<HTMLInputElement>(null);
+    const referredByRef = useRef<SearchableDropdownHandle>(null);
     const itemRefs = useRef<{ [key: number]: SearchableDropdownHandle | null }>({});
 
     // Load registered doctors for autosuggest
     useEffect(() => {
-        apiService.getDoctors().then(setDoctorSuggestions).catch(console.error);
+        apiService.getDoctors().then(setDoctors).catch(console.error);
     }, []);
 
-    const handleDoctorFocus = () => {
-        if (!details.referred_by || details.referred_by.trim() === '' || details.referred_by.trim().toUpperCase() === 'SELF') {
-            setDetails(prev => ({ ...prev, referred_by: 'Dr. ' }));
-        }
-    };
-
-    const handleDoctorChange = (val: string) => {
-        if (!val || val.trim() === '') {
-            setDetails(prev => ({ ...prev, referred_by: '' }));
-            return;
-        }
-        if (val.toLowerCase().startsWith('dr. ')) {
-            const rest = val.slice(4).toUpperCase();
-            setDetails(prev => ({ ...prev, referred_by: `Dr. ${rest}` }));
-        } else if (val.toLowerCase().startsWith('dr.')) {
-            const rest = val.slice(3).trimStart().toUpperCase();
-            setDetails(prev => ({ ...prev, referred_by: `Dr. ${rest}` }));
-        } else {
-            setDetails(prev => ({ ...prev, referred_by: `Dr. ${val.toUpperCase()}` }));
-        }
-    };
-
-    const handleDoctorBlur = () => {
-        const trimmed = (details.referred_by || '').trim();
-        if (!trimmed || trimmed.toUpperCase() === 'DR.' || trimmed.toUpperCase() === 'DR. ' || trimmed.toUpperCase() === 'SELF') {
-            setDetails(prev => ({ ...prev, referred_by: 'Self' }));
-        }
-    };
+    const doctorOptions = useMemo(() => {
+        return doctors.map(doc => ({
+            value: doc.name,
+            label: doc.name,
+            badge: doc.usage_count > 0 ? `${doc.usage_count}` : undefined,
+        }));
+    }, [doctors]);
 
     useEffect(() => {
         if (isClientMode) {
@@ -675,7 +654,7 @@ const ReceiptForm: React.FC = () => {
     const prevStep = () => setStep(prev => Math.max(1, prev - 1));
 
     // Focus helpers
-    const handleCustomerKeyDown = (e: React.KeyboardEvent, nextRef?: React.RefObject<HTMLInputElement> | 'tests') => {
+    const handleCustomerKeyDown = (e: React.KeyboardEvent, nextRef?: React.RefObject<{ focus: () => void } | null> | 'tests') => {
         if (e.key === 'Enter') {
             e.preventDefault();
             if (nextRef === 'tests') {
@@ -792,23 +771,16 @@ const ReceiptForm: React.FC = () => {
 
                 <div className="md:col-span-2 pt-2">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1 px-1">Referred By / Doctor</label>
-                    <input 
-                        ref={referredByRef} 
-                        onKeyDown={e => handleCustomerKeyDown(e, mobileRef)} 
-                        type="text" 
-                        list="doctor-suggestions"
-                        value={details.referred_by || ''} 
-                        onFocus={handleDoctorFocus}
-                        onChange={e => handleDoctorChange(e.target.value)} 
-                        onBlur={handleDoctorBlur}
-                        className="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50" 
-                        placeholder="Self" 
+                    <SearchableDropdown
+                        ref={referredByRef}
+                        options={doctorOptions}
+                        value={details.referred_by || ''}
+                        onChange={val => setDetails(prev => ({ ...prev, referred_by: val }))}
+                        onKeyDown={e => handleCustomerKeyDown(e, mobileRef)}
+                        placeholder="Self (or search/type doctor...)"
+                        className="w-full p-3 border border-slate-200 rounded-xl text-sm outline-none focus:ring-4 focus:ring-blue-50 bg-white"
+                        allowCustom={true}
                     />
-                    <datalist id="doctor-suggestions">
-                        {doctorSuggestions.map((doc, idx) => (
-                            <option key={idx} value={doc} />
-                        ))}
-                    </datalist>
                 </div>
 
                 {/* Contact Section: Mobile & Email */}

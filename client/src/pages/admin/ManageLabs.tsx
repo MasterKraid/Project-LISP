@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
-import { Lab, PackageList, Package, User, MasterPackage } from '../../types';
+import { Lab, PackageList, Package, User, MasterPackage, Doctor, DoctorDuplicateGroup } from '../../types';
 import SearchableDropdown from '../../components/SearchableDropdown';
 import { RatelistLinkedClientsTooltip, PriceAlertTooltip, RatelistMarkupTagTooltip } from '../../components/RatelistTooltips';
 import ExcelImportModal from '../../components/ExcelImportModal';
@@ -21,6 +21,20 @@ const ManageLabs: React.FC = () => {
     const [newMasterName, setNewMasterName] = useState('');
     const [aliasModalPkg, setAliasModalPkg] = useState<MasterPackage | null>(null);
     const [newAliasName, setNewAliasName] = useState('');
+
+    // Doctor Directory States
+    const [doctors, setDoctors] = useState<Doctor[]>([]);
+    const [duplicateGroups, setDuplicateGroups] = useState<DoctorDuplicateGroup[]>([]);
+    const [activeMergeGroup, setActiveMergeGroup] = useState<DoctorDuplicateGroup | null>(null);
+    const [selectedCanonicalName, setSelectedCanonicalName] = useState('');
+    const [isDoctorsOpen, setIsDoctorsOpen] = useState(false);
+    const [doctorSearch, setDoctorSearch] = useState('');
+    const [showOnlyDuplicates, setShowOnlyDuplicates] = useState(false);
+    const [newDoctorName, setNewDoctorName] = useState('');
+    const [editingDoctorId, setEditingDoctorId] = useState<number | null>(null);
+    const [editingDoctorName, setEditingDoctorName] = useState('');
+    const [syncReceipts, setSyncReceipts] = useState(true);
+    const [doctorActionLoading, setDoctorActionLoading] = useState(false);
 
     // Global Excel Upload Modals
     const [excelImportTargetList, setExcelImportTargetList] = useState<PackageList | null>(null);
@@ -124,20 +138,175 @@ const ManageLabs: React.FC = () => {
     const fetchData = async () => {
         setIsLoading(true);
         try {
-            const [labsData, listsData, usersData, masterData] = await Promise.all([
+            const [labsData, listsData, usersData, masterData, doctorsData, dupsData] = await Promise.all([
                 apiService.getLabs(),
                 apiService.getPackageLists(),
                 apiService.getUsers(),
-                apiService.getMasterPackages()
+                apiService.getMasterPackages(),
+                apiService.getDoctors(),
+                apiService.getDoctorDuplicates()
             ]);
             setLabs(labsData);
             setAllLists(listsData.filter((l: any) => !l.name.startsWith('[DELETED]')));
             setUsers(usersData);
             setMasterPackages(masterData);
+            setDoctors(doctorsData);
+            setDuplicateGroups(dupsData.groups || []);
         } catch (error) {
             console.error("Failed to fetch lab data", error);
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const fetchDoctors = async () => {
+        try {
+            const [data, dupsData] = await Promise.all([
+                apiService.getDoctors(),
+                apiService.getDoctorDuplicates()
+            ]);
+            setDoctors(data);
+            setDuplicateGroups(dupsData.groups || []);
+        } catch (e) {
+            console.error('Failed to fetch doctors', e);
+        }
+    };
+
+    const normalizeDoctor = (name: string): string => {
+        return name
+            .toLowerCase()
+            .replace(/^(?:dr|doctor)\.?\s*/i, '')
+            .replace(/[^a-z0-9]/g, '');
+    };
+
+    const duplicateNormMap = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const d of doctors) {
+            const norm = normalizeDoctor(d.name);
+            if (norm) {
+                map.set(norm, (map.get(norm) || 0) + 1);
+            }
+        }
+        return map;
+    }, [doctors]);
+
+    const totalDuplicatesCount = useMemo(() => {
+        return doctors.filter(d => (duplicateNormMap.get(normalizeDoctor(d.name)) || 0) > 1).length;
+    }, [doctors, duplicateNormMap]);
+
+    const getDoctorGroup = (doc: Doctor): DoctorDuplicateGroup | null => {
+        const k = normalizeDoctor(doc.name);
+        return duplicateGroups.find(g => g.key === k) || null;
+    };
+
+    const handleMergeAllDuplicates = async () => {
+        if (!duplicateGroups.length) return;
+        if (!window.confirm(`Merge all ${duplicateGroups.length} duplicate doctor groups?\n\nThis will remove redundant duplicate entries and automatically update all historical receipts to the unified "DR. <NAME>" format.`)) {
+            return;
+        }
+        try {
+            setDoctorActionLoading(true);
+            const res = await apiService.mergeAllDoctorDuplicates();
+            alert(res.message);
+            await fetchDoctors();
+        } catch (err: any) {
+            alert(err.message || 'Failed to merge doctor duplicates');
+        } finally {
+            setDoctorActionLoading(false);
+        }
+    };
+
+    const handleOpenMergeGroup = (group: DoctorDuplicateGroup) => {
+        setActiveMergeGroup(group);
+        setSelectedCanonicalName(group.canonical_name);
+    };
+
+    const handleConfirmMergeGroup = async () => {
+        if (!activeMergeGroup || !selectedCanonicalName.trim()) return;
+        try {
+            setDoctorActionLoading(true);
+            const ids = activeMergeGroup.doctors.map(d => d.id);
+            const res = await apiService.mergeDoctorGroup(selectedCanonicalName.trim(), ids);
+            setActiveMergeGroup(null);
+            alert(res.message || 'Doctor group merged successfully');
+            await fetchDoctors();
+        } catch (err: any) {
+            alert(err.message || 'Failed to merge doctor group');
+        } finally {
+            setDoctorActionLoading(false);
+        }
+    };
+
+    const filteredDoctors = useMemo(() => {
+        return doctors.filter(doc => {
+            const norm = normalizeDoctor(doc.name);
+            const isDuplicate = (duplicateNormMap.get(norm) || 0) > 1;
+
+            if (showOnlyDuplicates && !isDuplicate) {
+                return false;
+            }
+
+            if (!doctorSearch.trim()) return true;
+
+            const term = doctorSearch.toLowerCase().trim();
+            const termNorm = normalizeDoctor(doctorSearch);
+
+            if (doc.name.toLowerCase().includes(term)) return true;
+            if (termNorm && norm.includes(termNorm)) return true;
+
+            return false;
+        });
+    }, [doctors, showOnlyDuplicates, doctorSearch, duplicateNormMap]);
+
+    const handleAddDoctor = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!newDoctorName.trim()) return;
+        try {
+            setDoctorActionLoading(true);
+            await apiService.createDoctor(newDoctorName.trim());
+            setNewDoctorName('');
+            await fetchDoctors();
+        } catch (err: any) {
+            alert(err.message || 'Failed to add doctor');
+        } finally {
+            setDoctorActionLoading(false);
+        }
+    };
+
+    const handleStartEditDoctor = (doc: Doctor) => {
+        setEditingDoctorId(doc.id);
+        setEditingDoctorName(doc.name);
+        setSyncReceipts(true);
+    };
+
+    const handleSaveEditDoctor = async (id: number) => {
+        if (!editingDoctorName.trim()) return;
+        try {
+            setDoctorActionLoading(true);
+            await apiService.updateDoctor(id, editingDoctorName.trim(), syncReceipts);
+            setEditingDoctorId(null);
+            setEditingDoctorName('');
+            await fetchDoctors();
+        } catch (err: any) {
+            alert(err.message || 'Failed to update doctor');
+        } finally {
+            setDoctorActionLoading(false);
+        }
+    };
+
+    const handleDeleteDoctor = async (id: number, name: string) => {
+        if (!window.confirm(`Are you sure you want to delete "${name}" from the doctor directory?`)) return;
+        try {
+            setDoctorActionLoading(true);
+            await apiService.deleteDoctor(id);
+            if (editingDoctorId === id) {
+                setEditingDoctorId(null);
+            }
+            await fetchDoctors();
+        } catch (err: any) {
+            alert(err.message || 'Failed to delete doctor');
+        } finally {
+            setDoctorActionLoading(false);
         }
     };
 
@@ -1089,6 +1258,226 @@ const ManageLabs: React.FC = () => {
                     )}
                 </fieldset>
 
+                {/* Doctor Directory Expandable Section */}
+                <fieldset className="border-2 border-emerald-200 bg-emerald-50/20 p-4 md:p-6 rounded-xl mb-8 transition-all">
+                    <legend className="px-3 flex items-center justify-between cursor-pointer" onClick={() => setIsDoctorsOpen(!isDoctorsOpen)}>
+                        <div className="flex items-center gap-2">
+                            <div className="w-7 h-7 rounded bg-emerald-600 flex items-center justify-center text-white shadow-sm">
+                                <i className="fa-solid fa-user-doctor text-xs"></i>
+                            </div>
+                            <span className="text-base md:text-lg font-bold text-emerald-950 uppercase tracking-tight md:tracking-normal">
+                                Doctor Directory
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-xs font-black bg-emerald-100 text-emerald-800 border border-emerald-200">
+                                {doctors.length} Doctors
+                            </span>
+                            {totalDuplicatesCount > 0 && (
+                                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
+                                    <i className="fa-solid fa-triangle-exclamation text-[10px]"></i>
+                                    {totalDuplicatesCount} Duplicates
+                                </span>
+                            )}
+                        </div>
+                        <button
+                            type="button"
+                            className="ml-4 w-7 h-7 rounded-full bg-emerald-100 text-emerald-600 hover:bg-emerald-200 flex items-center justify-center text-xs transition-transform"
+                        >
+                            <i className={`fa-solid ${isDoctorsOpen ? 'fa-chevron-up' : 'fa-chevron-down'}`}></i>
+                        </button>
+                    </legend>
+
+                    {isDoctorsOpen && (
+                        <div className="space-y-4 pt-2 animate-in fade-in duration-150">
+                            <p className="text-xs text-emerald-800/80 leading-relaxed">
+                                Central database of referring doctors with usage counters and duplicate detection. Doctors are sorted by usage count descending for fast selection during receipt creation.
+                            </p>
+
+                            {/* Add Doctor Form & Filter Actions */}
+                            <div className="flex flex-col lg:flex-row items-stretch lg:items-end gap-3 bg-white p-3.5 rounded-lg border border-emerald-100 shadow-sm">
+                                <form onSubmit={handleAddDoctor} className="flex-1 flex flex-col sm:flex-row items-end gap-3">
+                                    <div className="flex-1 w-full space-y-1">
+                                        <label className="text-[10px] font-bold text-gray-400 uppercase">Doctor Name</label>
+                                        <input
+                                            type="text"
+                                            value={newDoctorName}
+                                            onChange={e => setNewDoctorName(e.target.value)}
+                                            placeholder="e.g. DR. JOHN DOE"
+                                            className="w-full p-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500 font-medium"
+                                        />
+                                    </div>
+                                    <button
+                                        type="submit"
+                                        disabled={!newDoctorName.trim() || doctorActionLoading}
+                                        className="w-full sm:w-auto px-5 py-2 bg-emerald-600 text-white font-bold rounded-lg hover:bg-emerald-700 transition-all text-xs h-[38px] flex items-center justify-center gap-1.5 shrink-0 shadow-sm disabled:opacity-50"
+                                    >
+                                        <i className="fa-solid fa-plus-circle"></i> Add Doctor
+                                    </button>
+                                </form>
+
+                                <div className="flex flex-col sm:flex-row items-center gap-2 border-t lg:border-t-0 lg:border-l border-gray-100 pt-3 lg:pt-0 lg:pl-3">
+                                    <div className="relative w-full sm:w-64">
+                                        <i className="fa-solid fa-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                                        <input
+                                            type="text"
+                                            value={doctorSearch}
+                                            onChange={e => setDoctorSearch(e.target.value)}
+                                            placeholder="Search doctors..."
+                                            className="w-full pl-8 pr-3 py-2 border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-emerald-500"
+                                        />
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowOnlyDuplicates(!showOnlyDuplicates)}
+                                        className={`w-full sm:w-auto px-3 py-2 rounded-lg text-xs font-bold border transition-all flex items-center justify-center gap-1.5 shrink-0 h-[38px] ${
+                                            showOnlyDuplicates
+                                                ? 'bg-amber-600 text-white border-amber-600 shadow-sm'
+                                                : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                                        }`}
+                                    >
+                                        <i className="fa-solid fa-filter text-[10px]"></i>
+                                        {showOnlyDuplicates ? 'Showing Duplicates Only' : `Filter Duplicates (${totalDuplicatesCount})`}
+                                    </button>
+                                    {duplicateGroups.length > 0 && (
+                                        <button
+                                            type="button"
+                                            onClick={handleMergeAllDuplicates}
+                                            disabled={doctorActionLoading}
+                                            className="w-full sm:w-auto px-4 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition-all text-xs h-[38px] flex items-center justify-center gap-1.5 shrink-0 shadow-sm disabled:opacity-50"
+                                            title="Merge all duplicate doctor variations into canonical format"
+                                        >
+                                            <i className="fa-solid fa-code-merge text-xs"></i>
+                                            Merge All Duplicates ({duplicateGroups.length} Groups)
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Doctors List */}
+                            <div className="bg-white rounded-lg border border-emerald-100 shadow-sm overflow-hidden">
+                                <div className="max-h-96 overflow-y-auto divide-y divide-gray-100">
+                                    {filteredDoctors.map((doc, idx) => {
+                                        const isDuplicate = (duplicateNormMap.get(normalizeDoctor(doc.name)) || 0) > 1;
+                                        const isEditing = editingDoctorId === doc.id;
+
+                                        return (
+                                            <div
+                                                key={doc.id}
+                                                className={`p-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs transition-colors ${
+                                                    isDuplicate ? 'bg-amber-50/40 hover:bg-amber-50/70' : 'hover:bg-gray-50'
+                                                }`}
+                                            >
+                                                {isEditing ? (
+                                                    <div className="flex-1 w-full space-y-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <input
+                                                                type="text"
+                                                                value={editingDoctorName}
+                                                                onChange={e => setEditingDoctorName(e.target.value)}
+                                                                className="flex-1 p-2 border border-emerald-400 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                                                                autoFocus
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleSaveEditDoctor(doc.id)}
+                                                                disabled={doctorActionLoading}
+                                                                className="px-3 py-2 bg-emerald-600 text-white rounded-lg font-bold hover:bg-emerald-700 transition-all flex items-center gap-1 shadow-sm"
+                                                            >
+                                                                <i className="fa-solid fa-check"></i> Save
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setEditingDoctorId(null)}
+                                                                className="px-3 py-2 bg-gray-200 text-gray-700 rounded-lg font-bold hover:bg-gray-300 transition-all"
+                                                            >
+                                                                <i className="fa-solid fa-xmark"></i> Cancel
+                                                            </button>
+                                                        </div>
+                                                        <label className="flex items-center gap-2 text-[11px] text-gray-600 cursor-pointer pl-1">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={syncReceipts}
+                                                                onChange={e => setSyncReceipts(e.target.checked)}
+                                                                className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                                                            />
+                                                            <span>Update historical receipts using the old doctor name</span>
+                                                        </label>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <div className="flex items-center gap-3 min-w-0">
+                                                            <span className="w-6 text-center font-mono text-[11px] text-gray-400 shrink-0">
+                                                                #{idx + 1}
+                                                            </span>
+                                                            <div className="min-w-0">
+                                                                <div className="flex items-center gap-2 flex-wrap">
+                                                                    <span className="font-bold text-gray-800 text-sm tracking-tight truncate">
+                                                                        {doc.name}
+                                                                    </span>
+                                                                    {isDuplicate && (
+                                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 shrink-0">
+                                                                            Duplicate Variation
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
+                                                            <span className="px-2.5 py-1 rounded text-[11px] font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1.5">
+                                                                <i className="fa-solid fa-receipt text-[10px]"></i>
+                                                                {doc.usage_count} receipt{doc.usage_count === 1 ? '' : 's'}
+                                                            </span>
+                                                            <div className="flex items-center gap-1">
+                                                                {isDuplicate && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            const grp = getDoctorGroup(doc);
+                                                                            if (grp) handleOpenMergeGroup(grp);
+                                                                        }}
+                                                                        disabled={doctorActionLoading}
+                                                                        className="w-7 h-7 rounded-lg bg-amber-100 text-amber-800 hover:bg-indigo-600 hover:text-white flex items-center justify-center transition-colors"
+                                                                        title="Merge this duplicate doctor group"
+                                                                    >
+                                                                        <i className="fa-solid fa-code-merge text-[11px]"></i>
+                                                                    </button>
+                                                                )}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleStartEditDoctor(doc)}
+                                                                    className="w-7 h-7 rounded-lg bg-gray-100 text-gray-600 hover:bg-emerald-50 hover:text-emerald-700 flex items-center justify-center transition-colors"
+                                                                    title="Edit Doctor Name"
+                                                                >
+                                                                    <i className="fa-solid fa-pencil text-[11px]"></i>
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleDeleteDoctor(doc.id, doc.name)}
+                                                                    className="w-7 h-7 rounded-lg bg-gray-100 text-gray-600 hover:bg-rose-50 hover:text-rose-700 flex items-center justify-center transition-colors"
+                                                                    title="Delete Doctor"
+                                                                >
+                                                                    <i className="fa-solid fa-trash-can text-[11px]"></i>
+                                                                </button>
+                                                            </div>
+                                                        </div>
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                    {filteredDoctors.length === 0 && (
+                                        <div className="p-8 text-center text-xs text-gray-400 italic">
+                                            {showOnlyDuplicates
+                                                ? 'No duplicate doctor variations found!'
+                                                : `No doctors found matching "${doctorSearch}"`}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </fieldset>
+
                 {/* Add New Laboratory Form */}
                 <fieldset className="border-2 border-gray-300 p-4 md:p-6 rounded-xl mb-10">
                     <legend className="px-3 flex items-center gap-2">
@@ -1192,11 +1581,23 @@ const ManageLabs: React.FC = () => {
 
                                                     <div className="min-w-0">
                                                         <div className="text-base font-black text-gray-800 truncate">{lab.name}</div>
-                                                        <div className="flex items-center gap-2 mt-1">
+                                                        <div className="flex items-center gap-2 mt-1 flex-wrap">
                                                             <span className="text-[10px] text-gray-400 font-mono italic">REF: #{lab.id.toString().padStart(3, '0')}</span>
                                                             <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-blue-50 text-blue-700 border border-blue-100 uppercase">
                                                                 {labLists.length} Rate Databases
                                                             </span>
+                                                            {(() => {
+                                                                const totalSpacingMismatches = labLists.reduce((acc, l) => acc + (l.spacing_mismatch_count || 0), 0);
+                                                                if (totalSpacingMismatches > 0) {
+                                                                    return (
+                                                                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black bg-amber-100 text-amber-800 border border-amber-300 uppercase flex items-center gap-1" title="Tests differing in spacing or punctuation from Mother Ratelist">
+                                                                            <i className="fa-solid fa-triangle-exclamation text-[9px]"></i>
+                                                                            {totalSpacingMismatches} Spacing Mismatch{totalSpacingMismatches === 1 ? '' : 'es'}
+                                                                        </span>
+                                                                    );
+                                                                }
+                                                                return null;
+                                                            })()}
                                                         </div>
                                                     </div>
                                                 </div>
@@ -1316,7 +1717,7 @@ const ManageLabs: React.FC = () => {
                                                                                                         Mother
                                                                                                     </span>
                                                                                                 )}
-                                                                                                {hasRedOutline && (
+                                                                                                {((list.missing_master_count || 0) > 0) && (
                                                                                                     <div className="relative group/red inline-block shrink-0">
                                                                                                         <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-red-100 text-red-700 border border-red-300 uppercase flex items-center gap-1 shrink-0 animate-pulse">
                                                                                                             <i className="fa-solid fa-triangle-exclamation text-[9px]"></i>
@@ -1340,17 +1741,90 @@ const ManageLabs: React.FC = () => {
                                                                                                         </div>
                                                                                                     </div>
                                                                                                 )}
+                                                                                                {((list.critical_pricing_count || 0) > 0) && (
+                                                                                                    <div className="relative group/crit-pricing inline-block shrink-0">
+                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-red-100 text-red-700 border border-red-300 uppercase flex items-center gap-1 shrink-0 animate-pulse">
+                                                                                                            <i className="fa-solid fa-triangle-exclamation text-[9px]"></i>
+                                                                                                            {list.critical_pricing_count} Price Error{list.critical_pricing_count === 1 ? '' : 's'}
+                                                                                                        </span>
+                                                                                                        <div className="absolute left-0 top-full mt-1.5 w-56 bg-gray-900 text-white text-[11px] rounded-lg p-2 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/crit-pricing:opacity-100 transition-opacity">
+                                                                                                            <span className="font-bold text-red-300 block mb-0.5">Critical Pricing Issue</span>
+                                                                                                            <span className="text-gray-300 leading-tight block">
+                                                                                                                {list.critical_pricing_count} test{list.critical_pricing_count === 1 ? ' has' : 's have'} pricing errors (MRP ≤ 0 or B2B &gt; MRP).
+                                                                                                            </span>
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                )}
                                                                                                 {hasYellowOutline && (
                                                                                                     <div className="relative group/yellow inline-block shrink-0">
                                                                                                         <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-yellow-100 text-yellow-900 border border-yellow-300 uppercase flex items-center gap-1 shrink-0">
                                                                                                             <i className="fa-solid fa-circle-exclamation text-[9px]"></i>
-                                                                                                            {list.unconfigured_pricing_count || 0} Needs Price
+                                                                                                            {list.missing_b2b_count || list.unconfigured_pricing_count || 0} Needs Price
                                                                                                         </span>
                                                                                                         <div className="absolute left-0 top-full mt-1.5 w-56 bg-gray-900 text-white text-[11px] rounded-lg p-2 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/yellow:opacity-100 transition-opacity">
                                                                                                             <span className="font-bold text-amber-300 block mb-0.5">Pricing Alert</span>
                                                                                                             <span className="text-gray-300 leading-tight block">
-                                                                                                                {list.unconfigured_pricing_count || 0} tests have unconfigured pricing (MRP ≤ 0, B2B ≤ 0, or B2B &gt; MRP).
+                                                                                                                {list.missing_b2b_count || list.unconfigured_pricing_count || 0} tests have unconfigured pricing (B2B ≤ 0).
                                                                                                             </span>
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                )}
+                                                                                                {((list.spacing_mismatch_count || 0) > 0) && (
+                                                                                                    <div className="relative group/spacing-mismatch inline-block shrink-0">
+                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-amber-100 text-amber-800 border border-amber-300 uppercase flex items-center gap-1 shrink-0">
+                                                                                                            <i className="fa-solid fa-triangle-exclamation text-[9px]"></i>
+                                                                                                            {list.spacing_mismatch_count} Spacing Mismatch{list.spacing_mismatch_count === 1 ? '' : 'es'}
+                                                                                                        </span>
+                                                                                                        <div className="absolute left-0 top-full mt-1.5 w-72 max-h-52 overflow-y-auto bg-gray-900 text-white text-[11px] rounded-lg p-2.5 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/spacing-mismatch:opacity-100 transition-opacity">
+                                                                                                            <div className="font-bold text-amber-300 pb-1 border-b border-gray-700 mb-1 flex items-center justify-between">
+                                                                                                                <span>Spacing Mismatches:</span>
+                                                                                                                <span className="text-[9px] bg-amber-950 px-1 py-0.5 rounded text-amber-200">{list.spacing_mismatch_count}</span>
+                                                                                                            </div>
+                                                                                                            <p className="text-[10px] text-gray-400 mb-1.5 italic">
+                                                                                                                Tests differing in spacing or punctuation from {list.mother_list_name || 'Mother Ratelist'}:
+                                                                                                            </p>
+                                                                                                            <ul className="space-y-1 text-gray-300">
+                                                                                                                {(list.spacing_mismatches || []).slice(0, 6).map((mm, i) => (
+                                                                                                                    <li key={i} className="text-[10.5px] leading-tight border-b border-gray-800/60 pb-1">
+                                                                                                                        <span className="font-semibold text-amber-200 block truncate">{mm.child_test}</span>
+                                                                                                                        <span className="text-[9.5px] text-gray-400 block mt-0.5">{mm.reason}</span>
+                                                                                                                    </li>
+                                                                                                                ))}
+                                                                                                                {((list.spacing_mismatches?.length || 0) > 6) && (
+                                                                                                                    <li className="text-[10px] text-gray-400 italic pt-1">
+                                                                                                                        +{(list.spacing_mismatches?.length || 0) - 6} more
+                                                                                                                    </li>
+                                                                                                                )}
+                                                                                                            </ul>
+                                                                                                        </div>
+                                                                                                    </div>
+                                                                                                )}
+                                                                                                {((list.extra_tests_count || 0) > 0) && (
+                                                                                                    <div className="relative group/extra-tests inline-block shrink-0">
+                                                                                                        <span className="cursor-help px-1.5 py-0.5 rounded-full text-[8px] font-black bg-slate-100 text-slate-700 border border-slate-300 uppercase flex items-center gap-1 shrink-0">
+                                                                                                            <i className="fa-solid fa-plus text-[8px]"></i>
+                                                                                                            +{list.extra_tests_count} Extra
+                                                                                                        </span>
+                                                                                                        <div className="absolute left-0 top-full mt-1.5 w-72 max-h-52 overflow-y-auto bg-gray-900 text-white text-[11px] rounded-lg p-2.5 shadow-2xl z-50 pointer-events-none opacity-0 group-hover/extra-tests:opacity-100 transition-opacity">
+                                                                                                            <div className="font-bold text-slate-300 pb-1 border-b border-gray-700 mb-1 flex items-center justify-between">
+                                                                                                                <span>Manually Added Tests:</span>
+                                                                                                                <span className="text-[9px] bg-slate-800 px-1 py-0.5 rounded text-slate-200">{list.extra_tests_count}</span>
+                                                                                                            </div>
+                                                                                                            <p className="text-[10px] text-gray-400 mb-1.5 italic">
+                                                                                                                Tests present in this ratelist beyond {list.mother_list_name || 'Mother Ratelist'}:
+                                                                                                            </p>
+                                                                                                            <ul className="space-y-1 text-gray-300">
+                                                                                                                {(list.extra_tests || []).slice(0, 8).map((et, i) => (
+                                                                                                                    <li key={i} className="text-[10.5px] leading-tight border-b border-gray-800/60 pb-1 truncate">
+                                                                                                                        <span className="font-semibold text-slate-200">{et.child_test}</span>
+                                                                                                                    </li>
+                                                                                                                ))}
+                                                                                                                {((list.extra_tests?.length || 0) > 8) && (
+                                                                                                                    <li className="text-[10px] text-gray-400 italic pt-1">
+                                                                                                                        +{(list.extra_tests?.length || 0) - 8} more tests
+                                                                                                                    </li>
+                                                                                                                )}
+                                                                                                            </ul>
                                                                                                         </div>
                                                                                                     </div>
                                                                                                 )}
@@ -1635,11 +2109,41 @@ const ManageLabs: React.FC = () => {
                             </div>
                         )}
 
+                        {/* Mother-Child Spacing Mismatch Alert Banner */}
+                        {(editingList.spacing_mismatch_count || 0) > 0 && (
+                            <div className="mb-4 p-3.5 bg-amber-50 border border-amber-200 rounded-lg flex flex-col gap-2.5 shadow-sm">
+                                <div className="flex items-center gap-2.5">
+                                    <i className="fa-solid fa-triangle-exclamation text-amber-600 text-base shrink-0"></i>
+                                    <div>
+                                        <span className="text-xs font-bold text-amber-900 block">
+                                            {editingList.spacing_mismatch_count} Spacing Mismatch{editingList.spacing_mismatch_count === 1 ? '' : 'es'} with Mother Ratelist ({editingList.mother_list_name})
+                                        </span>
+                                        <span className="text-[11px] text-amber-700">
+                                            Tests in this rate list differ in spacing or punctuation from the laboratory's Mother Ratelist. These discrepancies can prevent matching during receipt billing.
+                                        </span>
+                                    </div>
+                                </div>
+                                <div className="bg-white rounded border border-amber-200 p-2.5 max-h-36 overflow-y-auto">
+                                    <ul className="divide-y divide-amber-100">
+                                        {(editingList.spacing_mismatches || []).map((mm, i) => (
+                                            <li key={i} className="py-1 text-xs text-gray-700 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                                                <span className="font-semibold text-amber-900">{mm.child_test}</span>
+                                                <span className="text-[10px] text-amber-700 font-medium">{mm.reason}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            </div>
+                        )}
+
                         {/* Search packages inside modal & Download XLSX */}
                         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4">
                             <div className="flex items-center gap-2 flex-wrap">
                                 <i className="fa-solid fa-cubes text-slate-400 text-xs"></i>
-                                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Packages ({sortedInventoryPackages.length} items)</span>
+                                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                    Packages ({sortedInventoryPackages.length} items
+                                    {(editingList.extra_tests_count || 0) > 0 ? `, ${editingList.extra_tests_count} manually added` : ''})
+                                </span>
                                 {copyFeedback && (
                                     <span className="ml-2 text-[10px] bg-slate-800 text-white font-mono px-2 py-0.5 rounded shadow animate-in fade-in flex items-center gap-1">
                                         <i className="fa-solid fa-check text-emerald-400 text-[9px]"></i>
@@ -2137,6 +2641,101 @@ const ManageLabs: React.FC = () => {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+
+            {/* Modal: Merge Doctor Group */}
+            {activeMergeGroup && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
+                    <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-lg border border-gray-200 flex flex-col space-y-4">
+                        <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded bg-indigo-600 flex items-center justify-center text-white shadow-sm">
+                                    <i className="fa-solid fa-code-merge text-xs"></i>
+                                </div>
+                                <div>
+                                    <h3 className="text-sm font-bold text-gray-800">Merge Doctor Variations</h3>
+                                    <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Unify duplicate records and sync receipts</p>
+                                </div>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setActiveMergeGroup(null)}
+                                className="text-gray-400 hover:text-red-500"
+                            >
+                                <i className="fa-solid fa-xmark text-lg"></i>
+                            </button>
+                        </div>
+
+                        <div className="space-y-3 text-xs text-gray-700">
+                            <p className="text-[11px] text-gray-500">
+                                Select or specify the canonical doctor name to retain. All receipts matching any of these variations will be updated, and redundant entries will be removed.
+                            </p>
+
+                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
+                                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">Found Variations ({activeMergeGroup.doctors.length})</span>
+                                <div className="space-y-1.5">
+                                    {activeMergeGroup.doctors.map(d => (
+                                        <label
+                                            key={d.id}
+                                            className={`flex items-center justify-between p-2 rounded border cursor-pointer transition-all ${
+                                                selectedCanonicalName === d.name
+                                                    ? 'bg-indigo-50 border-indigo-300 text-indigo-900 font-bold'
+                                                    : 'bg-white border-gray-200 hover:bg-gray-100/70'
+                                            }`}
+                                            onClick={() => setSelectedCanonicalName(d.name)}
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <input
+                                                    type="radio"
+                                                    name="canonicalDocName"
+                                                    checked={selectedCanonicalName === d.name}
+                                                    onChange={() => setSelectedCanonicalName(d.name)}
+                                                    className="text-indigo-600 focus:ring-indigo-500"
+                                                />
+                                                <span className="font-mono text-xs">{d.name}</span>
+                                            </div>
+                                            <span className="text-[11px] px-2 py-0.5 rounded bg-gray-100 text-gray-600 font-bold">
+                                                {d.usage_count} receipt{d.usage_count === 1 ? '' : 's'}
+                                            </span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-gray-400 uppercase">Canonical Target Name</label>
+                                <input
+                                    type="text"
+                                    value={selectedCanonicalName}
+                                    onChange={e => setSelectedCanonicalName(e.target.value)}
+                                    placeholder="e.g. DR. JOHN DOE"
+                                    className="w-full p-2.5 border border-indigo-200 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
+                                />
+                                <span className="text-[10px] text-gray-400 block pt-0.5">
+                                    Recommended standard format: <code>{activeMergeGroup.canonical_name}</code>
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-end gap-2 pt-3 border-t border-gray-200">
+                            <button
+                                type="button"
+                                onClick={() => setActiveMergeGroup(null)}
+                                className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-xs font-bold hover:bg-gray-200 transition-all"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmMergeGroup}
+                                disabled={doctorActionLoading || !selectedCanonicalName.trim()}
+                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                            >
+                                <i className="fa-solid fa-code-merge"></i> Confirm &amp; Merge
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

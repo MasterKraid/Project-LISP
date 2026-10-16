@@ -1,4 +1,4 @@
-import { User, Branch, PackageList, Package, Lab, Customer, Receipt, Estimate, Document, FormattedCustomer, Transaction, LabReport, MasterPackage, AdminSettings } from '../types';
+import { User, Branch, PackageList, Package, Lab, Customer, Receipt, Estimate, Document, FormattedCustomer, Transaction, LabReport, MasterPackage, AdminSettings, Doctor, DoctorDuplicateGroup } from '../types';
 
 function getCookie(name: string): string | null {
   const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]*)'));
@@ -192,7 +192,13 @@ export const apiService = {
   acceptMasterPackages: (listId: number, package_names: string[]): Promise<{ count: number; message: string }> => apiFetch(`/package-lists/${listId}/accept-master-packages`, { method: 'POST', body: JSON.stringify({ package_names }) }),
 
   // --- Doctors & Settings ---
-  getDoctors: (): Promise<string[]> => apiFetch('/doctors'),
+  getDoctors: (): Promise<Doctor[]> => apiFetch('/doctors'),
+  getDoctorDuplicates: (): Promise<{ count: number; groups: DoctorDuplicateGroup[] }> => apiFetch('/doctors/duplicates'),
+  createDoctor: (name: string): Promise<Doctor> => apiFetch('/doctors', { method: 'POST', body: JSON.stringify({ name }) }),
+  updateDoctor: (id: number, name: string, update_receipts = true): Promise<{ message: string; doctor: Doctor }> => apiFetch(`/doctors/${id}`, { method: 'PUT', body: JSON.stringify({ name, update_receipts }) }),
+  deleteDoctor: (id: number): Promise<{ message: string }> => apiFetch(`/doctors/${id}`, { method: 'DELETE' }),
+  mergeDoctorGroup: (target_name: string, doctor_ids: number[]): Promise<{ message: string; keep_id: number; canonical_name: string; deleted_ids: number[]; affected_receipts: number }> => apiFetch('/doctors/merge', { method: 'POST', body: JSON.stringify({ target_name, doctor_ids }) }),
+  mergeAllDoctorDuplicates: (): Promise<{ message: string; merged_groups_count: number; deleted_doctors_count: number; updated_receipts_count: number }> => apiFetch('/doctors/merge-duplicates', { method: 'POST' }),
   getAdminSettings: (): Promise<AdminSettings> => apiFetch('/admin/settings'),
   updateAdminSettings: (settings: Partial<AdminSettings>): Promise<{ message: string; settings: AdminSettings }> => apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(settings) }),
 
