@@ -130,6 +130,7 @@ export interface Receipt {
     created_by_user_id: number;
     acting_as_client_id?: number;
     data_entry_done?: number;
+    b2b_cost?: number;
 }
 
 export interface Estimate {

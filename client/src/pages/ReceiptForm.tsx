@@ -547,11 +547,11 @@ const ReceiptForm: React.FC = () => {
                 discount: isNaN(rest.discount) ? 0 : rest.discount
             })),
             ...details,
-            payment_method: isClientMode ? 'B2B Wallet Deduction' : details.payment_method,
-            amount_received: isClientMode ? calculations.totalB2B.toString() : (details.amount_received.trim() === '' ? calculations.netPayable.toString() : details.amount_received),
+            payment_method: details.payment_method || (isClientMode ? 'Cash' : 'Cash'),
+            amount_received: details.amount_received.trim() === '' ? calculations.netPayable.toString() : details.amount_received,
             referred_by: details.referred_by || 'Self',
-            amount_final: isClientMode ? calculations.totalB2B : calculations.netPayable,
-            amount_due: isClientMode ? 0 : calculations.amountDue,
+            amount_final: calculations.netPayable,
+            amount_due: calculations.amountDue,
             total_mrp: calculations.totalMrp,
         };
 
@@ -982,20 +982,41 @@ const ReceiptForm: React.FC = () => {
                 </div>
                 <div className="md:col-span-2 bg-slate-50 border border-slate-200 p-6 rounded-3xl space-y-4">
                     {isClientMode ? (
-                        <div className="grid grid-cols-2 gap-y-3 text-sm">
-                            <span className="text-slate-500">Total MRP</span>
-                            <span className="text-right font-medium">₹{calculations.totalMrp.toFixed(0)}</span>
+                        <>
+                            <div className="grid grid-cols-2 gap-y-3 text-sm">
+                                <span className="text-slate-500">Total MRP</span>
+                                <span className="text-right font-medium">₹{calculations.totalMrp.toFixed(0)}</span>
 
-                            <span className="text-slate-500">Total number of tests</span>
-                            <span className="text-right font-bold text-blue-700">{calculations.totalTests}</span>
+                                <span className="text-slate-500">Total number of tests</span>
+                                <span className="text-right font-bold text-blue-700">{calculations.totalTests}</span>
 
-                            {showB2BDetails && (
-                                <>
-                                    <span className="text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">Total B2B</span>
-                                    <span className="text-right font-black text-green-700 mt-1">₹{calculations.totalB2B.toFixed(0)}</span>
-                                </>
+                                <div className="col-span-2 border-t border-slate-200 my-1"></div>
+
+                                <span className="text-base font-bold text-slate-900">Patient Net Payable</span>
+                                <span className="text-right text-lg font-black text-blue-600">₹{calculations.netPayable.toFixed(0)}</span>
+
+                                <span className="text-sm text-slate-500 mt-1">Amount Received</span>
+                                <span className="text-right font-bold text-slate-700 mt-1">₹{calculations.received.toFixed(0)}</span>
+
+                                {showB2BDetails && (
+                                    <>
+                                        <div className="col-span-2 border-t border-slate-200 my-1"></div>
+                                        <span className="text-slate-500 text-xs font-bold uppercase tracking-widest">B2B Cost (Wallet)</span>
+                                        <span className="text-right font-black text-rose-600">₹{calculations.totalB2B.toFixed(0)}</span>
+
+                                        <span className="text-xs font-black text-emerald-700 uppercase tracking-widest">Estimated Profit</span>
+                                        <span className="text-right font-black text-emerald-700">₹{Math.max(0, calculations.received - calculations.totalB2B).toFixed(0)}</span>
+                                    </>
+                                )}
+                            </div>
+
+                            {calculations.amountDue > 0 && (
+                                <div className="bg-amber-50 border border-amber-100 p-4 rounded-2xl flex justify-between items-center">
+                                    <span className="text-xs font-black text-amber-700 uppercase tracking-widest">Patient Pending Balance</span>
+                                    <span className="text-xl font-black text-amber-700">₹{calculations.amountDue.toFixed(0)}</span>
+                                </div>
                             )}
-                        </div>
+                        </>
                     ) : (
                         <>
                             <div className="grid grid-cols-2 gap-y-3 text-sm">
@@ -1095,15 +1116,23 @@ const ReceiptForm: React.FC = () => {
 
                     {isClientMode ? (
                         <section className="bg-slate-900 text-white p-6 rounded-2xl space-y-3 shadow-2xl">
-                            <div className="flex justify-between text-2xl font-black text-green-400">
-                                <span>MRP</span>
-                                <span>₹{calculations.totalMrp.toFixed(0)}</span>
-                            </div>
+                            <div className="flex justify-between text-sm opacity-60"><span>Patient Gross (MRP)</span> <span>₹{calculations.totalMrp.toFixed(0)}</span></div>
+                            <div className="flex justify-between text-xl font-black text-slate-100 border-t border-slate-800 pt-3"><span>Patient Net Payable</span> <span>₹{calculations.netPayable.toFixed(0)}</span></div>
+                            <div className="flex justify-between text-sm font-bold text-blue-400 pt-1"><span>Amount Received</span> <span>₹{calculations.received.toFixed(0)}</span></div>
+                            {calculations.amountDue > 0 && (
+                                <div className="flex justify-between text-sm font-bold text-amber-400"><span>Patient Pending Balance</span> <span>₹{calculations.amountDue.toFixed(0)}</span></div>
+                            )}
                             {showB2BDetails && (
-                                <div className="flex justify-between text-lg font-bold text-green-400 border-t border-slate-800 pt-3">
-                                    <span>Total B2B</span>
-                                    <span>₹{calculations.totalB2B.toFixed(2)}</span>
-                                </div>
+                                <>
+                                    <div className="flex justify-between text-sm text-slate-400 border-t border-slate-800 pt-3">
+                                        <span>B2B Wallet Deduction</span>
+                                        <span className="text-rose-400 font-bold">₹{calculations.totalB2B.toFixed(2)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xl font-black text-green-400">
+                                        <span>Estimated Client Profit</span>
+                                        <span>₹{(calculations.received - calculations.totalB2B).toFixed(0)}</span>
+                                    </div>
+                                </>
                             )}
                         </section>
                     ) : (

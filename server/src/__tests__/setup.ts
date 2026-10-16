@@ -97,6 +97,7 @@ export function createTestDb() {
             acting_as_client_id INTEGER,
             data_entry_done BOOLEAN NOT NULL DEFAULT 0,
             alarm_done BOOLEAN NOT NULL DEFAULT 0,
+            b2b_cost REAL DEFAULT 0,
             FOREIGN KEY (customer_id) REFERENCES customers(id),
             FOREIGN KEY (branch_id) REFERENCES branches(id),
             FOREIGN KEY (created_by_user_id) REFERENCES users(id),
@@ -110,6 +111,7 @@ export function createTestDb() {
             mrp REAL NOT NULL,
             discount_percentage REAL NOT NULL,
             package_list_id INTEGER,
+            b2b_price REAL DEFAULT 0,
             FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
         );
 
@@ -288,24 +290,13 @@ export function createReceiptWithDeduction(
             : -1
     );
 
-    // Insert receipt
-    const receiptResult = db.prepare(`
-        INSERT INTO receipts (customer_id, branch_id, created_at, total_mrp, amount_final, amount_received, amount_due, payment_method, num_tests, created_by_user_id, acting_as_client_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(customerId, branchId, '01/01/2026 | 10:00:00 | UTC+5:30', totalMrp, totalMrp, totalMrp, 0, paymentMethod || 'B2B Wallet Deduction', items.length, createdByUserId, actingAsClientId);
-
-    const receiptId = receiptResult.lastInsertRowid as number;
-
-    // Insert items
-    const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id) VALUES (?, ?, ?, ?, ?)');
-    items.forEach(item => insertItem.run(receiptId, item.name, item.mrp, item.discount, item.package_list_id));
-
-    // Process B2B deduction if applicable
-    if (targetClientId !== -1) {
-        const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(targetClientId) as { package_list_id: number }[];
-        const listIds = clientAccess.map(r => r.package_list_id);
-
-        const totalB2BCost = items.reduce((sum, item) => {
+    // Precompute B2B prices if applicable
+    let totalB2BCost = 0;
+    const itemsWithB2B = items.map(item => {
+        let b2b_price = 0;
+        if (targetClientId !== -1) {
+            const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(targetClientId) as { package_list_id: number }[];
+            const listIds = clientAccess.map(r => r.package_list_id);
             const itemPkgListId = item.package_list_id;
             if (!itemPkgListId || !listIds.includes(itemPkgListId)) {
                 throw new Error(`Unauthorized or missing rate category for item: ${item.name}`);
@@ -314,9 +305,26 @@ export function createReceiptWithDeduction(
             if (!pkg) {
                 throw new Error(`Test '${item.name}' is not available in the selected laboratory/rate database.`);
             }
-            return sum + pkg.b2b_price;
-        }, 0);
+            b2b_price = pkg.b2b_price;
+            totalB2BCost += b2b_price;
+        }
+        return { ...item, b2b_price };
+    });
 
+    // Insert receipt
+    const receiptResult = db.prepare(`
+        INSERT INTO receipts (customer_id, branch_id, created_at, total_mrp, amount_final, amount_received, amount_due, payment_method, num_tests, created_by_user_id, acting_as_client_id, b2b_cost)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(customerId, branchId, '01/01/2026 | 10:00:00 | UTC+5:30', totalMrp, totalMrp, totalMrp, 0, paymentMethod || 'B2B Wallet Deduction', items.length, createdByUserId, actingAsClientId, totalB2BCost);
+
+    const receiptId = receiptResult.lastInsertRowid as number;
+
+    // Insert items
+    const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id, b2b_price) VALUES (?, ?, ?, ?, ?, ?)');
+    itemsWithB2B.forEach(item => insertItem.run(receiptId, item.name, item.mrp, item.discount, item.package_list_id, item.b2b_price));
+
+    // Process B2B deduction if applicable
+    if (targetClientId !== -1) {
         // Check balance
         const client = db.prepare('SELECT wallet_balance, allow_negative_balance, negative_balance_allowed_until FROM users WHERE id = ?').get(targetClientId) as any;
         if (!client) throw new Error('Target B2B Client not found');

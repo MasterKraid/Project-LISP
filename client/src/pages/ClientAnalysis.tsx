@@ -29,15 +29,18 @@ interface TrendMonth {
   spend: number;
 }
 
-interface TopTest {
-  package_name: string;
+interface DailyTrendItem {
+  date: string;
+  label: string;
   count: number;
+  spend: number;
+  profit: number;
 }
 
 const ClientAnalysis: React.FC = () => {
   const [stats, setStats] = useState<ClientStats | null>(null);
   const [trend, setTrend] = useState<TrendMonth[]>([]);
-  const [topTests, setTopTests] = useState<TopTest[]>([]);
+  const [dailyTrend, setDailyTrend] = useState<DailyTrendItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'BI' | 'ADVANCED'>('BI');
   const [timeframe, setTimeframe] = useState<number | 'lifetime'>(3);
@@ -48,8 +51,8 @@ const ClientAnalysis: React.FC = () => {
         setLoading(true);
         const data = await apiService.getClientAnalysis();
         setStats(data.stats);
-        setTrend(data.trend);
-        setTopTests(data.topTests);
+        setTrend(data.trend || []);
+        setDailyTrend(data.dailyTrend || []);
       } catch (err) {
         console.error('Failed to load B2B client analysis', err);
       } finally {
@@ -207,21 +210,21 @@ const ClientAnalysis: React.FC = () => {
                 </div>
               </div>
 
-              {/* Card 4: Total Patients */}
+              {/* Card 4: This Month's Patients (Swapped ANL-2) */}
               <div className="bg-blue-50 border border-blue-150 p-5 rounded-2xl flex flex-col justify-between relative overflow-hidden group shadow-sm hover:scale-[1.01] transition-transform duration-200">
                 <div className="absolute right-3 top-3 opacity-15 text-blue-600 group-hover:scale-110 transition-transform duration-200">
                   <i className="fa-solid fa-users text-3xl"></i>
                 </div>
                 <span className="text-[10px] font-bold text-blue-600 uppercase tracking-widest leading-none mb-2 block">
-                  Total Patients
+                  This Month's Patients
                 </span>
                 <span className="text-2xl font-black text-blue-900 leading-tight">
-                  {stats?.total_orders || 0}
+                  {stats?.current_month_patients || 0}
                 </span>
                 <div className="text-[9px] font-bold text-blue-500 leading-none mt-3 flex items-center justify-between">
-                  <span>Referred patients overall</span>
+                  <span>Referred patients this month</span>
                   <span className="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full font-black text-[8px] uppercase">
-                    {stats?.current_month_patients || 0} this month
+                    {stats?.total_orders || 0} Lifetime Patients
                   </span>
                 </div>
               </div>
@@ -408,80 +411,149 @@ const ClientAnalysis: React.FC = () => {
                 )}
               </fieldset>
 
-              {/* Right Column: Top Ordered Tests Leaderboard */}
+              {/* Right Column: Day-to-Day Volume Trend Chart (ANL-3) */}
               <fieldset className="lg:col-span-5 border-2 border-gray-300 p-4 md:p-6 rounded-xl bg-white shadow-sm flex flex-col justify-between min-w-0">
                 <legend className="px-3 flex items-center gap-2">
-                  <div className="w-7 h-7 rounded bg-blue-600 flex items-center justify-center text-white shadow-sm">
-                    <i className="fa-solid fa-ranking-star text-xs"></i>
+                  <div className="w-7 h-7 rounded bg-emerald-600 flex items-center justify-center text-white shadow-sm">
+                    <i className="fa-solid fa-calendar-day text-xs"></i>
                   </div>
-                  <span className="text-base font-bold text-gray-800 uppercase tracking-tight">Referral Leaderboard</span>
+                  <span className="text-base font-bold text-gray-800 uppercase tracking-tight">Day-to-Day Volume Trend</span>
                 </legend>
 
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2 px-1">
-                  Your top 5 most frequently ordered packages
-                </p>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1 mb-2 px-1">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    14-day daily patient orders and revenue overview
+                  </p>
+                  <div className="flex items-center gap-2 text-[9px] font-black uppercase font-mono">
+                    <span className="text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                      {dailyTrend.reduce((s, d) => s + d.count, 0)} Orders
+                    </span>
+                    <span className="text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                      ₹{dailyTrend.reduce((s, d) => s + d.profit, 0).toLocaleString('en-IN', { minimumFractionDigits: 0 })} Profit
+                    </span>
+                  </div>
+                </div>
 
-                {topTests.length === 0 ? (
+                {dailyTrend.length === 0 ? (
                   <div className="flex flex-col items-center justify-center py-20 text-slate-400 italic text-xs font-bold uppercase tracking-wider flex-grow">
-                    No package referrals recorded yet.
+                    No daily activity recorded in the past 14 days.
                   </div>
                 ) : (
-                  <div className="space-y-3 mt-6 flex-grow flex flex-col justify-center">
-                    {topTests.map((t, idx) => {
-                      const colors = [
-                        'bg-indigo-50 border-indigo-100 text-indigo-700',
-                        'bg-blue-50 border-blue-100 text-blue-700',
-                        'bg-emerald-50 border-emerald-100 text-emerald-700',
-                        'bg-amber-50 border-amber-100 text-amber-700',
-                        'bg-slate-50 border-slate-100 text-slate-700',
-                      ];
-                      const progressColors = [
-                        'bg-indigo-600',
-                        'bg-blue-600',
-                        'bg-emerald-600',
-                        'bg-amber-500',
-                        'bg-slate-500',
-                      ];
-
-                      const maxCount = topTests[0]?.count || 1;
-                      const progressWidth = `${(t.count / maxCount) * 100}%`;
+                  <div className="w-full mt-4 flex-grow flex flex-col justify-end overflow-x-auto">
+                    {(() => {
+                      const maxDailyCount = Math.max(...dailyTrend.map(d => d.count), 4);
+                      const dailyWidth = 420;
+                      const dailyHeight = 140;
+                      const colWidth = (dailyWidth - 30) / Math.max(dailyTrend.length, 1);
 
                       return (
-                        <div
-                          key={idx}
-                          className="flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-xl shadow-sm relative group overflow-hidden"
+                        <svg
+                          viewBox={`0 0 ${dailyWidth} ${dailyHeight + 40}`}
+                          className="w-full min-w-[340px] h-auto overflow-visible select-none"
                         >
-                          <div
-                            className={`w-7 h-7 rounded-lg border font-black text-xs flex items-center justify-center shrink-0 ${colors[idx] || colors[4]
-                              }`}
-                          >
-                            #{idx + 1}
-                          </div>
+                          <defs>
+                            <linearGradient id="emeraldDailyGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#059669" />
+                              <stop offset="100%" stopColor="#34d399" stopOpacity="0.4" />
+                            </linearGradient>
+                          </defs>
 
-                          <div className="flex-grow min-w-0 z-10">
-                            <span className="font-bold text-slate-700 truncate block text-xs group-hover:text-indigo-900 transition-colors">
-                              {t.package_name}
-                            </span>
-                            <div className="w-full bg-slate-100 h-1.5 rounded-full mt-2 overflow-hidden">
-                              <div
-                                style={{ width: progressWidth }}
-                                className={`h-full rounded-full transition-all duration-300 ${progressColors[idx] || progressColors[4]
+                          {/* Grid Lines */}
+                          {[0, 0.5, 1].map((ratio, idx) => {
+                            const y = 10 + dailyHeight * (1 - ratio);
+                            return (
+                              <g key={idx}>
+                                <line
+                                  x1="25"
+                                  y1={y}
+                                  x2={dailyWidth - 10}
+                                  y2={y}
+                                  stroke="#f1f5f9"
+                                  strokeWidth="1"
+                                  strokeDasharray="3 3"
+                                />
+                                <text x="20" y={y + 3} className="text-[8px] font-bold text-slate-400 text-right font-mono" textAnchor="end">
+                                  {Math.round(maxDailyCount * ratio)}
+                                </text>
+                              </g>
+                            );
+                          })}
+
+                          {/* Bars */}
+                          {dailyTrend.map((d, idx) => {
+                            const x = 30 + idx * colWidth;
+                            const barW = Math.max(8, colWidth * 0.65);
+                            const barH = d.count > 0 ? Math.max(6, (d.count / maxDailyCount) * dailyHeight) : 2;
+                            const barY = 10 + dailyHeight - barH;
+                            const isToday = idx === dailyTrend.length - 1;
+
+                            return (
+                              <g key={idx} className="group cursor-pointer">
+                                <rect
+                                  x={x + (colWidth - barW) / 2}
+                                  y={barY}
+                                  width={barW}
+                                  height={barH}
+                                  fill={d.count > 0 ? (isToday ? '#0d9488' : 'url(#emeraldDailyGrad)') : '#e2e8f0'}
+                                  rx="3"
+                                  className="transition-all duration-200 hover:brightness-90"
+                                />
+                                {/* Value indicator on hover */}
+                                <g className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                                  <rect
+                                    x={Math.min(Math.max(10, x - 25), dailyWidth - 90)}
+                                    y={Math.max(2, barY - 34)}
+                                    width="80"
+                                    height="30"
+                                    rx="4"
+                                    fill="#0f172a"
+                                    className="shadow-lg"
+                                  />
+                                  <text
+                                    x={Math.min(Math.max(10, x - 25), dailyWidth - 90) + 40}
+                                    y={Math.max(2, barY - 34) + 12}
+                                    className="text-[8px] font-bold fill-white text-center font-mono"
+                                    textAnchor="middle"
+                                  >
+                                    {d.label}: {d.count} orders
+                                  </text>
+                                  <text
+                                    x={Math.min(Math.max(10, x - 25), dailyWidth - 90) + 40}
+                                    y={Math.max(2, barY - 34) + 24}
+                                    className="text-[8px] font-bold fill-emerald-400 text-center font-mono"
+                                    textAnchor="middle"
+                                  >
+                                    +₹{d.profit.toFixed(0)} Profit
+                                  </text>
+                                </g>
+
+                                {/* Date Label */}
+                                <text
+                                  x={x + colWidth / 2}
+                                  y={15 + dailyHeight + 10}
+                                  className={`text-[8px] font-bold text-center uppercase tracking-tighter ${
+                                    isToday ? 'fill-emerald-700 font-black' : 'fill-slate-400'
                                   }`}
-                              ></div>
-                            </div>
-                          </div>
-
-                          <div className="text-right shrink-0 z-10 pl-2">
-                            <span className="text-xs font-black text-slate-800 leading-none block">
-                              {t.count}
-                            </span>
-                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wide block mt-0.5">
-                              Orders
-                            </span>
-                          </div>
-                        </div>
+                                  textAnchor="middle"
+                                >
+                                  {d.label.split(' ')[0]}
+                                </text>
+                                <text
+                                  x={x + colWidth / 2}
+                                  y={15 + dailyHeight + 20}
+                                  className={`text-[7px] font-semibold text-center uppercase ${
+                                    isToday ? 'fill-emerald-600 font-black' : 'fill-slate-400'
+                                  }`}
+                                  textAnchor="middle"
+                                >
+                                  {d.label.split(' ')[1]}
+                                </text>
+                              </g>
+                            );
+                          })}
+                        </svg>
                       );
-                    })}
+                    })()}
                   </div>
                 )}
               </fieldset>

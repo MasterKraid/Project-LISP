@@ -70,12 +70,43 @@ router.post('/receipts', isAuthenticated, (req, res) => {
 
     try {
         const transaction = db.transaction(() => {
+            let targetClientId = -1;
+            if (user.role === 'CLIENT') {
+                targetClientId = user.id;
+            } else if (acting_as_client_id && (user.role === 'ADMIN' || user.role === 'DATA_ENTRY' || user.master_data_entry)) {
+                targetClientId = acting_as_client_id;
+            }
+
+            let totalB2BCost = 0;
+            const itemsWithB2B = payload.items.map((item: any) => {
+                let actualB2B = 0;
+                if (targetClientId !== -1) {
+                    const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(targetClientId) as { package_list_id: number }[];
+                    const listIds = clientAccess.map(row => row.package_list_id);
+                    const itemPkgListId = Number(item.package_list_id || payload.package_list_id);
+                    if (!itemPkgListId || !listIds.includes(itemPkgListId)) {
+                        throw new Error(`Unauthorized or missing rate category for item: ${item.name}`);
+                    }
+                    const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?`).get(itemPkgListId, item.name) as Package | undefined;
+                    if (pkg) {
+                        actualB2B = pkg.b2b_price;
+                    } else {
+                        throw new Error(`Test '${item.name}' is not available in the selected laboratory/rate database.`);
+                    }
+                    totalB2BCost += actualB2B;
+                }
+                return {
+                    ...item,
+                    b2b_price: actualB2B
+                };
+            });
+
             const customerId = handleCustomerData(payload.customer_data, acting_as_client_id || user.id);
 
             const lab = db.prepare('SELECT logo_path FROM labs JOIN lab_package_lists lpl ON labs.id = lpl.lab_id WHERE lpl.package_list_id = ? LIMIT 1').get(payload.items[0].package_list_id) as Lab | undefined;
 
-            const receiptResult = db.prepare(`INSERT INTO receipts (customer_id, branch_id, created_at, total_mrp, amount_final, amount_received, amount_due, payment_method, referred_by, notes, num_tests, logo_path, created_by_user_id, acting_as_client_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-                .run(customerId, branch.id, getISTDateTimeString(), payload.total_mrp, payload.amount_final, payload.amount_received, payload.amount_due, payload.payment_method, payload.referred_by, payload.notes, payload.num_tests || payload.items.length, lab?.logo_path, user.id, acting_as_client_id || null);
+            const receiptResult = db.prepare(`INSERT INTO receipts (customer_id, branch_id, created_at, total_mrp, amount_final, amount_received, amount_due, payment_method, referred_by, notes, num_tests, logo_path, created_by_user_id, acting_as_client_id, b2b_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+                .run(customerId, branch.id, getISTDateTimeString(), payload.total_mrp, payload.amount_final, payload.amount_received, payload.amount_due, payload.payment_method, payload.referred_by, payload.notes, payload.num_tests || payload.items.length, lab?.logo_path, user.id, acting_as_client_id || null, totalB2BCost);
 
             const receiptId = receiptResult.lastInsertRowid;
 
@@ -89,37 +120,11 @@ router.post('/receipts', isAuthenticated, (req, res) => {
                 }
             }
 
-            const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id) VALUES (?, ?, ?, ?, ?)');
-            payload.items.forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, item.discount, item.package_list_id || null));
-
-            let targetClientId = -1;
-            if (user.role === 'CLIENT') {
-                targetClientId = user.id;
-            } else if (acting_as_client_id && (user.role === 'ADMIN' || user.role === 'DATA_ENTRY' || user.master_data_entry)) {
-                targetClientId = acting_as_client_id;
-            }
+            const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id, b2b_price) VALUES (?, ?, ?, ?, ?, ?)');
+            itemsWithB2B.forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, item.discount, item.package_list_id || null, item.b2b_price || 0));
 
             let updatedUser: User | null = null;
             if (targetClientId !== -1) {
-                // Fetch the client's custom package list IDs
-                const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(targetClientId) as { package_list_id: number }[];
-                const listIds = clientAccess.map(row => row.package_list_id);
-
-                const totalB2BCost = payload.items.reduce((sum: number, item: any) => {
-                    const itemPkgListId = Number(item.package_list_id || payload.package_list_id);
-                    if (!itemPkgListId || !listIds.includes(itemPkgListId)) {
-                        throw new Error(`Unauthorized or missing rate category for item: ${item.name}`);
-                    }
-                    let actualB2B = 0;
-                    const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?`).get(itemPkgListId, item.name) as Package | undefined;
-                    if (pkg) {
-                        actualB2B = pkg.b2b_price;
-                    } else {
-                        throw new Error(`Test '${item.name}' is not available in the selected laboratory/rate database.`);
-                    }
-                    return sum + actualB2B;
-                }, 0);
-
                 const client = db.prepare('SELECT wallet_balance, allow_negative_balance, negative_balance_allowed_until FROM users WHERE id = ?').get(targetClientId) as User;
                 if (!client) throw new Error("Target B2B Client not found");
 
@@ -230,25 +235,25 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
 
             // 4. Calculate new B2B cost from the submitted items with database verification
             let newB2BCost = 0;
-            if (newTargetClientId !== -1) {
-                const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(newTargetClientId) as { package_list_id: number }[];
-                const listIds = clientAccess.map(row => row.package_list_id);
-
-                newB2BCost = (payload.items || []).reduce((sum: number, item: any) => {
+            const itemsWithB2B = (payload.items || []).map((item: any) => {
+                let actualB2B = 0;
+                if (newTargetClientId !== -1) {
+                    const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(newTargetClientId) as { package_list_id: number }[];
+                    const listIds = clientAccess.map(row => row.package_list_id);
                     const itemPkgListId = Number(item.package_list_id || payload.package_list_id);
                     if (!itemPkgListId || !listIds.includes(itemPkgListId)) {
                         throw new Error(`Unauthorized or missing rate category for item: ${item.name}`);
                     }
-                    let actualB2B = 0;
                     const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?`).get(itemPkgListId, item.name) as Package | undefined;
                     if (pkg) {
                         actualB2B = pkg.b2b_price;
                     } else {
                         throw new Error(`Test '${item.name}' is not available in the selected laboratory/rate database.`);
                     }
-                    return sum + actualB2B;
-                }, 0);
-            }
+                    newB2BCost += actualB2B;
+                }
+                return { ...item, b2b_price: actualB2B };
+            });
 
             // 5. Handle wallet adjustments cleanly without mutating past transaction ledger
             if (oldClientId !== -1 && newTargetClientId !== -1 && oldClientId === newTargetClientId) {
@@ -311,8 +316,8 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
 
             // 6. Replace receipt items
             db.prepare('DELETE FROM receipt_items WHERE receipt_id = ?').run(receiptId);
-            const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id) VALUES (?, ?, ?, ?, ?)');
-            (payload.items || []).forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, isNaN(item.discount) ? 0 : item.discount, item.package_list_id || payload.package_list_id || null));
+            const insertItem = db.prepare('INSERT INTO receipt_items (receipt_id, package_name, mrp, discount_percentage, package_list_id, b2b_price) VALUES (?, ?, ?, ?, ?, ?)');
+            itemsWithB2B.forEach((item: any) => insertItem.run(receiptId, item.name, item.mrp, isNaN(item.discount) ? 0 : item.discount, item.package_list_id || payload.package_list_id || null, item.b2b_price || 0));
 
             // 7. Resolve lab logo
             const lab = (payload.items && payload.items.length > 0 && payload.items[0].package_list_id)
@@ -320,8 +325,8 @@ router.put('/receipts/:id', isAuthenticated, (req, res) => {
                 : undefined;
 
             // 8. Update receipt metadata
-            db.prepare(`UPDATE receipts SET customer_id = ?, total_mrp = ?, amount_final = ?, amount_received = ?, amount_due = ?, payment_method = ?, referred_by = ?, notes = ?, num_tests = ?, logo_path = ?, acting_as_client_id = ? WHERE id = ?`)
-                .run(customerId, payload.total_mrp, payload.amount_final, payload.amount_received, payload.amount_due, payload.payment_method, payload.referred_by, payload.notes, payload.num_tests || (payload.items || []).length, lab?.logo_path || existingReceipt.logo_path, newTargetClientId !== -1 ? newTargetClientId : null, receiptId);
+            db.prepare(`UPDATE receipts SET customer_id = ?, total_mrp = ?, amount_final = ?, amount_received = ?, amount_due = ?, payment_method = ?, referred_by = ?, notes = ?, num_tests = ?, logo_path = ?, acting_as_client_id = ?, b2b_cost = ? WHERE id = ?`)
+                .run(customerId, payload.total_mrp, payload.amount_final, payload.amount_received, payload.amount_due, payload.payment_method, payload.referred_by, payload.notes, payload.num_tests || (payload.items || []).length, lab?.logo_path || existingReceipt.logo_path, newTargetClientId !== -1 ? newTargetClientId : null, newB2BCost, receiptId);
 
             return db.prepare('SELECT * FROM receipts WHERE id = ?').get(receiptId) as Receipt;
         })();
@@ -377,7 +382,7 @@ router.get('/receipts/:id', isAuthenticated, (req, res) => {
         }
 
         const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(receipt.customer_id) as Customer;
-        const items = db.prepare('SELECT id, package_name, mrp, discount_percentage, package_list_id FROM receipt_items WHERE receipt_id = ?').all(req.params.id) as any[];
+        const items = db.prepare('SELECT id, package_name, mrp, discount_percentage, package_list_id, b2b_price FROM receipt_items WHERE receipt_id = ?').all(req.params.id) as any[];
         
         let targetClientId = -1;
         if (receipt.acting_as_client_id) {
@@ -393,24 +398,23 @@ router.get('/receipts/:id', isAuthenticated, (req, res) => {
         if (targetClientId !== -1) {
             const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(targetClientId) as { package_list_id: number }[];
             const listIds = clientAccess.map(row => row.package_list_id);
-            if (listIds.length > 0) {
-                enrichedItems = items.map(item => {
+            enrichedItems = items.map(item => {
+                let b2b_price = item.b2b_price;
+                if ((b2b_price === undefined || b2b_price === null || b2b_price === 0) && listIds.length > 0) {
                     const itemPkgListId = item.package_list_id;
-                    let b2b_price = 0;
                     if (itemPkgListId && listIds.includes(itemPkgListId)) {
                         const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?`).get(itemPkgListId, item.package_name) as Package | undefined;
                         if (pkg) b2b_price = pkg.b2b_price;
-                    } else if (!itemPkgListId && listIds.length > 0) {
-                        // Fallback for legacy/historic receipts where package_list_id is null
+                    } else if (!itemPkgListId) {
                         const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id IN (${listIds.join(',')}) AND name = ?`).get(item.package_name) as Package | undefined;
                         if (pkg) b2b_price = pkg.b2b_price;
                     }
-                    return {
-                        ...item,
-                        b2b_price
-                    };
-                });
-            }
+                }
+                return {
+                    ...item,
+                    b2b_price: b2b_price || 0
+                };
+            });
         }
 
         // Resolve lab information and package_list_id from items
@@ -585,23 +589,25 @@ router.get('/transactions', isAuthenticated, (req, res) => {
         const txs = db.prepare(`SELECT * FROM transactions WHERE user_id = ? ORDER BY id DESC`).all(user.id) as Transaction[];
         const enrichedTxs = txs.map(tx => {
             if (tx.type === 'RECEIPT_DEDUCTION' && tx.receipt_id) {
-                const receipt = db.prepare(`SELECT r.customer_id, c.name as customer_name FROM receipts r JOIN customers c ON c.id = r.customer_id WHERE r.id = ?`).get(tx.receipt_id) as any;
+                const receipt = db.prepare(`SELECT r.customer_id, r.b2b_cost, c.name as customer_name FROM receipts r JOIN customers c ON c.id = r.customer_id WHERE r.id = ?`).get(tx.receipt_id) as any;
                 const clientAccess = db.prepare('SELECT package_list_id FROM user_package_list_access WHERE user_id = ?').all(user.id) as { package_list_id: number }[];
                 const listIds = clientAccess.map(row => row.package_list_id);
-                const items = db.prepare(`SELECT package_name, mrp, package_list_id FROM receipt_items WHERE receipt_id = ?`).all(tx.receipt_id) as any[];
+                const items = db.prepare(`SELECT package_name, mrp, package_list_id, b2b_price FROM receipt_items WHERE receipt_id = ?`).all(tx.receipt_id) as any[];
                 let total_profit = 0;
                 const itemsWithB2B = items.map(item => {
-                    let b2b_price = item.mrp;
-                    const itemPkgListId = item.package_list_id;
-                    if (itemPkgListId && listIds.includes(itemPkgListId)) {
-                        const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?`).get(itemPkgListId, item.package_name) as Package | undefined;
-                        if (pkg) b2b_price = pkg.b2b_price;
-                    } else if (!itemPkgListId && listIds.length > 0) {
-                        // Fallback for legacy/historic receipts where package_list_id is null
-                        const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id IN (${listIds.join(',')}) AND name = ?`).get(item.package_name) as Package | undefined;
-                        if (pkg) b2b_price = pkg.b2b_price;
+                    let b2b_price = item.b2b_price;
+                    if ((b2b_price === undefined || b2b_price === null || b2b_price === 0) && listIds.length > 0) {
+                        const itemPkgListId = item.package_list_id;
+                        if (itemPkgListId && listIds.includes(itemPkgListId)) {
+                            const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id = ? AND name = ?`).get(itemPkgListId, item.package_name) as Package | undefined;
+                            if (pkg) b2b_price = pkg.b2b_price;
+                        } else if (!itemPkgListId) {
+                            const pkg = db.prepare(`SELECT b2b_price FROM packages WHERE package_list_id IN (${listIds.join(',')}) AND name = ?`).get(item.package_name) as Package | undefined;
+                            if (pkg) b2b_price = pkg.b2b_price;
+                        }
                     }
-                    total_profit += item.mrp - b2b_price;
+                    b2b_price = b2b_price || 0;
+                    total_profit += (item.mrp || 0) - b2b_price;
                     return { name: item.package_name, mrp: item.mrp, b2b_price };
                 });
                 return { ...tx, items: itemsWithB2B, customer_name: receipt?.customer_name, total_profit };
@@ -784,13 +790,13 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
         const lastMonthDate = new Date(istNow.getFullYear(), istNow.getMonth() - 1, 1);
         const lastMonthStr = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
 
-        // 1. Spends, Count, Savings and Franchisee Profit
+        // 1. Spends, Count, Savings and Franchisee Profit (Immutable BI Snapshots & Actual Received Profit)
         const stats = db.prepare(`
             SELECT 
                 COUNT(r.id) as total_orders,
-                SUM(COALESCE(t.amount_deducted, 0)) as total_spend,
-                SUM(r.total_mrp - COALESCE(t.amount_deducted, 0)) as total_savings,
-                SUM(r.amount_final - COALESCE(t.amount_deducted, 0)) as total_profit
+                SUM(COALESCE(r.b2b_cost, t.amount_deducted, 0)) as total_spend,
+                SUM(r.total_mrp - COALESCE(r.b2b_cost, t.amount_deducted, 0)) as total_savings,
+                SUM(COALESCE(r.amount_received, r.amount_final, 0) - COALESCE(r.b2b_cost, t.amount_deducted, 0)) as total_profit
             FROM receipts r
             LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
             WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
@@ -800,9 +806,9 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
         const monthlyStats = db.prepare(`
             SELECT 
                 SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN r.total_mrp ELSE 0 END) as current_month_mrp,
-                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN COALESCE(t.amount_deducted, 0) ELSE 0 END) as current_month_b2b,
+                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN COALESCE(r.b2b_cost, t.amount_deducted, 0) ELSE 0 END) as current_month_b2b,
                 SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN 1 ELSE 0 END) as current_month_patients,
-                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN COALESCE(t.amount_deducted, 0) ELSE 0 END) as last_month_b2b
+                SUM(CASE WHEN (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) = ? THEN COALESCE(r.b2b_cost, t.amount_deducted, 0) ELSE 0 END) as last_month_b2b
             FROM receipts r
             LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
             WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
@@ -818,8 +824,8 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
             const row = db.prepare(`
                 SELECT 
                     COUNT(r.id) as count,
-                    SUM(COALESCE(t.amount_deducted, 0)) as spend,
-                    SUM(r.amount_final - COALESCE(t.amount_deducted, 0)) as profit
+                    SUM(COALESCE(r.b2b_cost, t.amount_deducted, 0)) as spend,
+                    SUM(COALESCE(r.amount_received, r.amount_final, 0) - COALESCE(r.b2b_cost, t.amount_deducted, 0)) as profit
                 FROM receipts r
                 LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
                 WHERE (r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?))
@@ -841,8 +847,8 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
             SELECT 
                 (substr(r.created_at, 7, 4) || '-' || substr(r.created_at, 4, 2)) as month,
                 COUNT(r.id) as count,
-                SUM(COALESCE(t.amount_deducted, 0)) as spend,
-                SUM(r.amount_final - COALESCE(t.amount_deducted, 0)) as profit
+                SUM(COALESCE(r.b2b_cost, t.amount_deducted, 0)) as spend,
+                SUM(COALESCE(r.amount_received, r.amount_final, 0) - COALESCE(r.b2b_cost, t.amount_deducted, 0)) as profit
             FROM receipts r
             LEFT JOIN transactions t ON t.receipt_id = r.id AND t.type = 'RECEIPT_DEDUCTION'
             WHERE r.acting_as_client_id = ? OR (r.acting_as_client_id IS NULL AND r.created_by_user_id = ?)
@@ -869,6 +875,24 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
                 count: data.count,
                 spend: data.spend,
                 profit: data.profit
+            });
+        }
+
+        // 2b. Day-to-Day Volume Trend (Past 14 continuous days for ANL-3)
+        const dailyTrend: any[] = [];
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        for (let i = 13; i >= 0; i--) {
+            const d = new Date(istNow);
+            d.setDate(d.getDate() - i);
+            const dStr = formatDateIST(d);
+            const label = `${d.getDate()} ${monthNames[d.getMonth()]}`;
+            const dayStats = getDailyStats(dStr);
+            dailyTrend.push({
+                date: dStr,
+                label,
+                count: dayStats.count,
+                spend: dayStats.spend,
+                profit: dayStats.profit
             });
         }
 
@@ -903,6 +927,7 @@ router.get('/client/analysis', isAuthenticated, (req, res) => {
                 day_before: dayBeforeStats
             },
             trend: continuousTrend,
+            dailyTrend,
             topTests
         });
     } catch (e: any) { res.status(500).json({ message: e.message }); }

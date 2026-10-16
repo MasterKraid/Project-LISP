@@ -135,6 +135,7 @@ export interface Receipt {
     acting_as_client?: User;
     display_doc_id?: string;
     client_name?: string;
+    b2b_cost?: number;
 }
 
 export interface Estimate {

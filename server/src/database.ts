@@ -279,6 +279,7 @@ const schema = `
         created_by_user_id INTEGER NOT NULL,
         acting_as_client_id INTEGER,
         data_entry_done BOOLEAN NOT NULL DEFAULT 0,
+        b2b_cost REAL DEFAULT 0,
         FOREIGN KEY (customer_id) REFERENCES customers(id),
         FOREIGN KEY (branch_id) REFERENCES branches(id),
         FOREIGN KEY (created_by_user_id) REFERENCES users(id),
@@ -291,6 +292,8 @@ const schema = `
         package_name TEXT NOT NULL,
         mrp REAL NOT NULL,
         discount_percentage REAL NOT NULL,
+        package_list_id INTEGER,
+        b2b_price REAL DEFAULT 0,
         FOREIGN KEY (receipt_id) REFERENCES receipts(id) ON DELETE CASCADE
     );
 
@@ -382,6 +385,61 @@ export function initDb() {
         console.log("Added package_list_id column to receipt_items successfully.");
     } catch (e) {
         // Ignored if column already exists
+    }
+
+    // Alter table to add b2b_cost column to receipts if not present
+    try {
+        db.exec("ALTER TABLE receipts ADD COLUMN b2b_cost REAL DEFAULT 0;");
+        console.log("Added b2b_cost column to receipts successfully.");
+    } catch (e) {
+        // Ignored if column already exists
+    }
+
+    // Alter table to add b2b_price column to receipt_items if not present
+    try {
+        db.exec("ALTER TABLE receipt_items ADD COLUMN b2b_price REAL DEFAULT 0;");
+        console.log("Added b2b_price column to receipt_items successfully.");
+    } catch (e) {
+        // Ignored if column already exists
+    }
+
+    // Backfill historical receipts b2b_cost from transactions table if 0 or null
+    try {
+        db.exec(`
+            UPDATE receipts 
+            SET b2b_cost = (
+                SELECT COALESCE(amount_deducted, 0) 
+                FROM transactions 
+                WHERE transactions.receipt_id = receipts.id AND transactions.type = 'RECEIPT_DEDUCTION' 
+                LIMIT 1
+            )
+            WHERE (b2b_cost IS NULL OR b2b_cost = 0) 
+              AND id IN (SELECT receipt_id FROM transactions WHERE type = 'RECEIPT_DEDUCTION');
+        `);
+    } catch (e) {
+        console.error("Backfill b2b_cost error:", e);
+    }
+
+    // Backfill historical receipt_items b2b_price if 0 or null
+    try {
+        db.exec(`
+            UPDATE receipt_items
+            SET b2b_price = (
+                SELECT p.b2b_price 
+                FROM packages p 
+                WHERE p.package_list_id = receipt_items.package_list_id 
+                  AND UPPER(TRIM(p.name)) = UPPER(TRIM(receipt_items.package_name))
+                LIMIT 1
+            )
+            WHERE (b2b_price IS NULL OR b2b_price = 0)
+              AND EXISTS (
+                  SELECT 1 FROM packages p 
+                  WHERE p.package_list_id = receipt_items.package_list_id 
+                    AND UPPER(TRIM(p.name)) = UPPER(TRIM(receipt_items.package_name))
+              );
+        `);
+    } catch (e) {
+        console.error("Backfill receipt_items b2b_price error:", e);
     }
 
     // One-time run to mark previous day 3+ critical alarms as done to prevent spam
