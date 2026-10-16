@@ -43,6 +43,19 @@ try {
     console.error("Migration check failed:", error);
 }
 
+// MIGRATION: Check if 'admin_settings' table has 'upi_password'
+try {
+    const tableInfo = db.prepare("PRAGMA table_info(admin_settings)").all() as any[];
+    const hasUpiPassword = tableInfo.some(col => col.name === 'upi_password');
+
+    if (tableInfo.length > 0 && !hasUpiPassword) {
+        console.log("Migrating database: Adding upi_password column to admin_settings...");
+        db.prepare("ALTER TABLE admin_settings ADD COLUMN upi_password TEXT").run();
+    }
+} catch (error) {
+    console.error("Migration check failed for admin_settings upi_password:", error);
+}
+
 // MIGRATION: Check if 'receipts' table has 'acting_as_client_id'
 try {
     const tableInfo = db.prepare("PRAGMA table_info(receipts)").all() as any[];
@@ -240,7 +253,8 @@ const schema = `
         id INTEGER PRIMARY KEY CHECK (id = 1),
         upi_id TEXT,
         organization_name TEXT,
-        lab_name TEXT
+        lab_name TEXT,
+        upi_password TEXT
     );
 
     CREATE TABLE IF NOT EXISTS customers (

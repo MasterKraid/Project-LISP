@@ -201,6 +201,7 @@ export const apiService = {
   mergeAllDoctorDuplicates: (): Promise<{ message: string; merged_groups_count: number; deleted_doctors_count: number; updated_receipts_count: number }> => apiFetch('/doctors/merge-duplicates', { method: 'POST' }),
   getAdminSettings: (): Promise<AdminSettings> => apiFetch('/admin/settings'),
   updateAdminSettings: (settings: Partial<AdminSettings>): Promise<{ message: string; settings: AdminSettings }> => apiFetch('/admin/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  verifyUpiSettingsPassword: (password: string): Promise<{ success: boolean; message?: string }> => apiFetch('/admin/upi-settings/verify-password', { method: 'POST', body: JSON.stringify({ password }) }),
 
   // --- Admin: Wallet Management ---
   updateWallet: (clientId: number, action: 'add' | 'deduct' | 'settle', amount?: number, notes?: string): Promise<void> => apiFetch('/wallets/update', { method: 'PUT', body: JSON.stringify({ clientId, action, amount, notes }) }),

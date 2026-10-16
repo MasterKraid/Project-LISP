@@ -44,4 +44,17 @@ describe('Admin UPI Settings Persistence (UPI-2)', () => {
         expect(updated.organization_name).toBe('N/A');
         expect(updated.lab_name).toBe('N/A');
     });
+
+    test('setting and querying upi_password works independently', () => {
+        db.prepare('UPDATE admin_settings SET upi_password = ? WHERE id = 1').run('secret123');
+
+        const settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
+        expect(settings.upi_password).toBe('secret123');
+        expect(settings.upi_id).toBe('initial@upi');
+
+        // Safe projection check (what GET /admin/settings returns)
+        const { upi_password, ...safeSettings } = settings;
+        expect(safeSettings.upi_password).toBeUndefined();
+        expect(!!upi_password).toBe(true);
+    });
 });

@@ -613,11 +613,50 @@ router.get('/admin/settings', isAuthenticated, (req, res) => {
             db.prepare("INSERT INTO admin_settings (id, upi_id, organization_name, lab_name) VALUES (1, '', 'N/A', 'N/A')").run();
             settings = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
         }
+        const { upi_password, ...safeSettings } = settings;
         res.json({
-            ...settings,
+            ...safeSettings,
+            has_upi_password: !!upi_password,
             org_name: settings.organization_name
         });
     } catch (e: any) { res.status(500).json({ message: e.message }); }
+});
+
+router.post('/admin/upi-settings/verify-password', isAdmin, (req, res) => {
+    try {
+        const { password } = req.body;
+        if (!password) {
+            return res.status(400).json({ success: false, message: 'Password is required' });
+        }
+
+        const settings = db.prepare('SELECT upi_password FROM admin_settings WHERE id = 1').get() as any;
+        if (!settings || !settings.upi_password) {
+            return res.status(400).json({ success: false, message: 'UPI settings password is not set in the database.' });
+        }
+
+        const storedPassword = String(settings.upi_password).trim();
+        const inputPassword = String(password).trim();
+
+        let isValid = false;
+        if (storedPassword.startsWith('$2a$') || storedPassword.startsWith('$2b$') || storedPassword.startsWith('$2y$')) {
+            try {
+                isValid = bcrypt.compareSync(inputPassword, storedPassword);
+            } catch {
+                isValid = false;
+            }
+        }
+        if (!isValid) {
+            isValid = (inputPassword === storedPassword);
+        }
+
+        if (isValid) {
+            res.json({ success: true, message: 'Password verified successfully' });
+        } else {
+            res.status(401).json({ success: false, message: 'Incorrect UPI settings password' });
+        }
+    } catch (e: any) {
+        res.status(500).json({ success: false, message: e.message });
+    }
 });
 
 router.put('/admin/settings', isAdmin, (req, res) => {
@@ -637,10 +676,12 @@ router.put('/admin/settings', isAdmin, (req, res) => {
             .run(newUpiId, newOrgName, newLabName);
 
         const updated = db.prepare('SELECT * FROM admin_settings WHERE id = 1').get() as any;
+        const { upi_password, ...safeUpdated } = updated;
         res.json({
             message: "Settings updated successfully",
             settings: {
-                ...updated,
+                ...safeUpdated,
+                has_upi_password: !!upi_password,
                 org_name: updated.organization_name
             }
         });
@@ -1472,7 +1513,15 @@ router.delete('/admin/customers/:id', isAdmin, (req, res) => {
 
 router.get('/admin/transactions/user/:userId', isAdmin, (req, res) => {
     try {
-        const txs = db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY id DESC').all(req.params.userId) as Transaction[];
+        const query = `
+            SELECT t.*, c.name as customer_name, c.prefix as customer_prefix 
+            FROM transactions t 
+            LEFT JOIN receipts r ON r.id = t.receipt_id 
+            LEFT JOIN customers c ON c.id = r.customer_id 
+            WHERE t.user_id = ? 
+            ORDER BY t.id DESC
+        `;
+        const txs = db.prepare(query).all(req.params.userId) as (Transaction & { customer_name?: string; customer_prefix?: string })[];
         res.json(txs);
     } catch (e: any) { res.status(500).json({ message: e.message }); }
 });

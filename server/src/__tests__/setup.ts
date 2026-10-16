@@ -22,7 +22,8 @@ export function createTestDb() {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             upi_id TEXT,
             organization_name TEXT,
-            lab_name TEXT
+            lab_name TEXT,
+            upi_password TEXT
         );
 
         CREATE TABLE IF NOT EXISTS users (

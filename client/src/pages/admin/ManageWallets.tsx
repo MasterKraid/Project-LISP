@@ -466,7 +466,7 @@ const ManageWallets: React.FC = () => {
                                                                     className="cursor-help hover:text-indigo-600 transition-colors"
                                                                     title={historyClient ? `RCPT-${String(tx.receipt_id).padStart(6, '0')} - ${historyClient.alias || historyClient.username}` : `RCPT-${String(tx.receipt_id).padStart(6, '0')}`}
                                                                 >
-                                                                    {`Receipt #RCPT-${String(tx.receipt_id).padStart(6, '0')}`}
+                                                                    {`Paid for Receipt #RCPT-${String(tx.receipt_id).padStart(6, '0')}${tx.customer_name ? ` for ${tx.customer_name}` : ''}`}
                                                                 </span>
                                                             ) :
                                                                 tx.type === 'ADMIN_CREDIT' ? 'Credit Added' :

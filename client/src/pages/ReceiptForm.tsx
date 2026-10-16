@@ -97,10 +97,10 @@ const ReceiptForm: React.FC = () => {
             ...filteredDocs.map(doc => ({
                 value: doc.name,
                 label: doc.name,
-                badge: doc.usage_count > 0 ? `${doc.usage_count}` : undefined,
+                badge: (!isClientMode && doc.usage_count > 0) ? `${doc.usage_count}` : undefined,
             }))
         ];
-    }, [doctors]);
+    }, [doctors, isClientMode]);
 
     useEffect(() => {
         if (isClientMode) {
@@ -416,7 +416,7 @@ const ReceiptForm: React.FC = () => {
         const pkg = packages.find(p => p.name === name);
 
         setItems(prevItems => {
-            return prevItems.map(item =>
+            const updated = prevItems.map(item =>
                 item.id === id ? {
                     ...item,
                     name: pkg ? pkg.name : name,
@@ -425,6 +425,13 @@ const ReceiptForm: React.FC = () => {
                     isFromDb: !!pkg
                 } : item
             );
+
+            // Auto-add row if this is the last row and name is selected
+            const selectedItemIndex = updated.findIndex(i => i.id === id);
+            if (selectedItemIndex === updated.length - 1 && name.trim() !== '') {
+                return [...updated, { id: Date.now() + 1, name: '', mrp: 0, b2b_price: 0, discount: 0, isFromDb: false }];
+            }
+            return updated;
         });
     };
 
@@ -666,13 +673,32 @@ const ReceiptForm: React.FC = () => {
         }
     };
 
-    const handleTestKeyDown = (e: React.KeyboardEvent, _itemId?: number) => {
+    const handleTestKeyDown = (e: React.KeyboardEvent, itemId: number) => {
         if (e.key === 'Enter') {
+            if (e.shiftKey) {
+                // Shift + Enter triggers Preview & Save
+                e.preventDefault();
+                e.stopPropagation();
+                const validItems = items.filter(i => i.name && i.name.trim() !== '');
+                if (validItems.length > 0) {
+                    handleSubmit(e as any);
+                }
+                return;
+            }
+
+            // Normal Enter: infinitely keep adding test names
             e.preventDefault();
             e.stopPropagation();
-            const validItems = items.filter(i => i.name && i.name.trim() !== '');
-            if (validItems.length > 0) {
-                handleSubmit(e as any);
+            const item = items.find(i => i.id === itemId);
+            const isLast = items[items.length - 1]?.id === itemId;
+            if (item && item.name && isLast) {
+                addItem();
+            } else if (!isLast) {
+                const currentIndex = items.findIndex(i => i.id === itemId);
+                const nextItem = items[currentIndex + 1];
+                if (nextItem) {
+                    itemRefs.current[nextItem.id]?.focus();
+                }
             }
         }
     };

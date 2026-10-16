@@ -57,6 +57,7 @@ export interface AdminSettings {
     organization_name?: string;
     org_name?: string;
     lab_name?: string;
+    has_upi_password?: boolean;
 }
 
 export interface Package {

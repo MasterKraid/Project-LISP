@@ -168,6 +168,14 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
         const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
             if (disabled) return;
 
+            if (e.key === 'Enter' && e.shiftKey) {
+                // Pass Shift+Enter to parent handler (e.g. Preview & Save)
+                if (onKeyDown) {
+                    onKeyDown(e);
+                }
+                return;
+            }
+
             if (isOpen) {
                 if (e.key === 'ArrowDown') {
                     e.preventDefault();
@@ -284,7 +292,16 @@ const SearchableDropdown = forwardRef<SearchableDropdownHandle, SearchableDropdo
                             return (
                                 <li
                                     key={option.value}
-                                    onClick={() => handleSelect(option)}
+                                    onMouseDown={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        handleSelect(option);
+                                    }}
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        handleSelect(option);
+                                    }}
                                     className={`p-2 cursor-pointer flex items-center justify-between gap-2 ${index === highlightedIndex ? 'bg-blue-600 text-white' : 'hover:bg-gray-100'}`}
                                 >
                                     <div className="flex items-center gap-2 min-w-0 flex-1">
