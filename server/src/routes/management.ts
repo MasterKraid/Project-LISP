@@ -733,17 +733,59 @@ router.delete('/labs/:id', isAdmin, (req, res) => {
 });
 
 router.put('/labs/:id/lists', isAdmin, (req, res) => {
-    const labId = req.params.id;
+    const labId = parseInt(req.params.id, 10);
     const listIds = req.body.listIds as number[];
-    const transaction = db.transaction(() => {
-        db.prepare('DELETE FROM lab_package_lists WHERE lab_id = ?').run(labId);
-        const insert = db.prepare('INSERT INTO lab_package_lists (lab_id, package_list_id) VALUES (?, ?)');
-        listIds.forEach(listId => insert.run(labId, listId));
-    });
+    if (isNaN(labId)) {
+        return res.status(400).json({ message: "Invalid Lab ID" });
+    }
+
     try {
+        const lab = db.prepare('SELECT id, name FROM labs WHERE id = ?').get(labId) as { id: number; name: string } | undefined;
+        if (!lab) {
+            return res.status(404).json({ message: "Lab not found" });
+        }
+
+        // Identify this lab's own mother ratelist if one was already mapped
+        const existingLists = db.prepare(`
+            SELECT pl.id, pl.name FROM package_lists pl
+            JOIN lab_package_lists lpl ON pl.id = lpl.package_list_id
+            WHERE lpl.lab_id = ?
+        `).all(labId) as any[];
+        const ownMotherList = existingLists.find(pl => isMotherRatelistName(pl.name));
+
+        const finalSet = new Set<number>();
+        if (ownMotherList) {
+            finalSet.add(ownMotherList.id);
+        }
+
+        for (const lid of (listIds || [])) {
+            const listObj = db.prepare('SELECT id, name FROM package_lists WHERE id = ?').get(lid) as { id: number; name: string } | undefined;
+            if (!listObj) continue;
+            const isMother = isMotherRatelistName(listObj.name);
+            if (isMother) {
+                // Only allow this lab's own mother ratelist. Other labs' mother ratelists cannot be linked.
+                if (ownMotherList && listObj.id === ownMotherList.id) {
+                    finalSet.add(listObj.id);
+                } else if (!ownMotherList && (listObj.name === `${lab.name} Mother Ratelist` || (listObj.name.endsWith(' Mother Ratelist') && listObj.name.startsWith(lab.name)))) {
+                    finalSet.add(listObj.id);
+                }
+            } else {
+                finalSet.add(listObj.id);
+            }
+        }
+
+        const transaction = db.transaction(() => {
+            db.prepare('DELETE FROM lab_package_lists WHERE lab_id = ?').run(labId);
+            const insert = db.prepare('INSERT INTO lab_package_lists (lab_id, package_list_id) VALUES (?, ?)');
+            for (const lid of finalSet) {
+                insert.run(labId, lid);
+            }
+        });
         transaction();
         res.status(204).send();
-    } catch (e: any) { res.status(500).json({ message: e.message }); }
+    } catch (e: any) {
+        res.status(500).json({ message: e.message });
+    }
 });
 
 router.put('/labs/:id/logo', isAdmin, (req, res) => {

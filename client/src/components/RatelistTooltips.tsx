@@ -115,7 +115,7 @@ export const RatelistMarkupTagTooltip: React.FC<MarkupTagTooltipProps> = ({
     return (
         <div 
             ref={triggerRef}
-            className="inline-block shrink-0"
+            className="inline-flex items-center shrink-0 -translate-y-[3px] align-middle"
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
             onMouseMove={updatePosition}

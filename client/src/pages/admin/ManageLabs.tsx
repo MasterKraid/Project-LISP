@@ -3,7 +3,7 @@ import PageHeader from '../../components/PageHeader';
 import { apiService } from '../../services/api';
 import { Lab, PackageList, Package, User, MasterPackage } from '../../types';
 import SearchableDropdown from '../../components/SearchableDropdown';
-import { RatelistLinkedClientsTooltip, RatelistMarkupTagTooltip, PriceAlertTooltip } from '../../components/RatelistTooltips';
+import { RatelistLinkedClientsTooltip, PriceAlertTooltip, RatelistMarkupTagTooltip } from '../../components/RatelistTooltips';
 import ExcelImportModal from '../../components/ExcelImportModal';
 
 declare var ExcelJS: any;
@@ -26,12 +26,29 @@ const ManageLabs: React.FC = () => {
     const [excelImportTargetList, setExcelImportTargetList] = useState<PackageList | null>(null);
     const [isMasterExcelModalOpen, setIsMasterExcelModalOpen] = useState(false);
 
-    const parseMarkupDiscount = (name: string) => {
+    const isMotherRatelistName = (name: string): boolean => {
+        if (!name) return false;
+        if (/\(.*?\bfrom\b.*?\)/i.test(name)) return false;
+        if (/\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(name)) return false;
+        const clean = name.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+        return clean.endsWith('Mother Ratelist') || 
+               clean.endsWith('Mother Rate List') || 
+               /^\[M\]/i.test(clean) || 
+               /\[M\]$/i.test(clean);
+    };
+
+    const getMarkupInfo = (name: string) => {
         let match = name.match(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+([^)]+))?\)/i);
         if (match) {
-            const pctStr = match[1].replace('+', '').replace('-', '');
-            const isMarkup = !match[1].startsWith('-');
+            const rawVal = match[1];
+            const numVal = parseFloat(rawVal);
+            const pctStr = `${Math.abs(numVal)}%`;
+            const type = match[2]?.toUpperCase();
             const sourceName = match[3]?.trim();
+            let isMarkup = numVal >= 0;
+            if (type === 'DISCOUNT') {
+                isMarkup = false;
+            }
             return { pctStr, isMarkup, sourceName };
         }
         match = name.match(/([+-]?\d+(?:\.\d+)?)\s*%\s*(Markup|Discount|PROFIT)?/i);
@@ -73,10 +90,13 @@ const ManageLabs: React.FC = () => {
     const [originalPackages, setOriginalPackages] = useState<Package[]>([]);
     const [inventorySearchQuery, setInventorySearchQuery] = useState('');
     const [newPackage, setNewPackage] = useState({ name: '', mrp: '', b2b_price: '', code_name: '' });
+    const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+    const [selectedCols, setSelectedCols] = useState<Set<'code_name' | 'name' | 'mrp' | 'b2b_price'>>(new Set());
 
     // Clone/Sync Wizard States
     const [isCloneOpen, setIsCloneOpen] = useState(false);
     const [cloneTargetList, setCloneTargetList] = useState<PackageList | null>(null);
+    const [cloneTargetLab, setCloneTargetLab] = useState<Lab | null>(null);
     const [cloneSourceListId, setCloneSourceListId] = useState<string>('');
     const [cloneDiscount, setCloneDiscount] = useState<string>('0');
     const [cloneMarkup, setCloneMarkup] = useState<string>('0');
@@ -180,8 +200,10 @@ const ManageLabs: React.FC = () => {
 
     const handleListToggle = (listId: number) => {
         const list = allLists.find(l => l.id === listId);
-        const isClone = list ? (/\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name)) : false;
-        if (list && !isClone && list.name.endsWith(' Mother Ratelist') && syncingLab && list.name === `${syncingLab.name} Mother Ratelist`) {
+        if (!list) return;
+        const isClone = (/\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name));
+        if (!isClone && isMotherRatelistName(list.name)) {
+            // Mother ratelists cannot be unassigned from their own lab, nor assigned to other labs
             return;
         }
         setAssignedLists(prev => {
@@ -231,6 +253,12 @@ const ManageLabs: React.FC = () => {
         if (!listIdStr) return;
         const listId = parseInt(listIdStr, 10);
 
+        const listObj = allLists.find(l => l.id === listId);
+        if (listObj && isMotherRatelistName(listObj.name)) {
+            alert("Mother ratelists are unique to their own lab and cannot be linked to another lab.");
+            return;
+        }
+
         try {
             const currentLab = labs.find(l => l.id === labId);
             if (currentLab) {
@@ -271,6 +299,63 @@ const ManageLabs: React.FC = () => {
             } catch (error) {
                 alert(`Error deleting database: ${error}`);
             }
+        }
+    };
+
+    // ----------------------------------------------------
+    // Clone / Sync Wizard Modal
+    // ----------------------------------------------------
+    const openCloneModal = (list: PackageList, parentLab: Lab) => {
+        setCloneTargetList(list);
+        setCloneTargetLab(parentLab);
+
+        // Auto select that lab's mother ratelist
+        const motherList = allLists.find(l => 
+            (l.name === `${parentLab.name} Mother Ratelist` || (l.name.endsWith(' Mother Ratelist') && l.name.startsWith(parentLab.name))) &&
+            !/\(.*?\bfrom\b.*?\)/i.test(l.name)
+        );
+        if (motherList) {
+            setCloneSourceListId(motherList.id.toString());
+        } else {
+            setCloneSourceListId('');
+        }
+
+        setCloneDiscount('0');
+        setCloneMarkup('0');
+        setIsCloneOpen(true);
+    };
+
+    const handleCloneSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!cloneTargetList || !cloneSourceListId) return;
+
+        try {
+            const sourceId = parseInt(cloneSourceListId, 10);
+            const disc = parseFloat(cloneDiscount) || 0;
+            const mark = parseFloat(cloneMarkup) || 0;
+
+            await apiService.clonePackageList(cloneTargetList.id, sourceId, disc, mark);
+
+            // Auto rename target list name to store markup/discount and source list name
+            const sourceList = allLists.find(l => l.id === sourceId);
+            const sourceName = sourceList ? sourceList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() : 'Mother Database';
+            const cleanTargetName = cloneTargetList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim();
+
+            let finalTargetName = cleanTargetName;
+            if (mark > 0) {
+                finalTargetName = `${cleanTargetName} (+${mark}% Markup from ${sourceName})`;
+            } else if (disc > 0) {
+                finalTargetName = `${cleanTargetName} (-${disc}% Discount from ${sourceName})`;
+            }
+
+            if (finalTargetName !== cloneTargetList.name) {
+                await apiService.updatePackageListName(cloneTargetList.id, finalTargetName);
+            }
+
+            setIsCloneOpen(false);
+            fetchData();
+        } catch (error) {
+            alert(`Error cloning and scaling package list: ${error}`);
         }
     };
 
@@ -386,6 +471,7 @@ const ManageLabs: React.FC = () => {
         setEditingList(list);
         setIsInventoryOpen(true);
         setInventorySearchQuery('');
+        setSelectedCols(new Set());
         try {
             const pkgs = await apiService.getPackagesForList(list.id);
             setPackages(pkgs);
@@ -401,8 +487,14 @@ const ManageLabs: React.FC = () => {
 
     const handleSavePackage = async (pkg: Package) => {
         try {
-            await apiService.updatePackageInList(pkg);
-            setOriginalPackages(prev => prev.map(o => o.id === pkg.id ? JSON.parse(JSON.stringify(pkg)) : o));
+            const cleanPkg: Package = {
+                ...pkg,
+                mrp: Number(pkg.mrp) || 0,
+                b2b_price: Number(pkg.b2b_price) || 0
+            };
+            await apiService.updatePackageInList(cleanPkg);
+            setPackages(prev => prev.map(p => p.id === pkg.id ? cleanPkg : p));
+            setOriginalPackages(prev => prev.map(o => o.id === pkg.id ? JSON.parse(JSON.stringify(cleanPkg)) : o));
             alert("Package item saved!");
         } catch (error) {
             alert(`Error saving package: ${error}`);
@@ -451,21 +543,51 @@ const ManageLabs: React.FC = () => {
         );
     }, [packages, inventorySearchQuery]);
 
+    // RTL-2: Yellow Alerts sorted first among existing packages
+    const sortedInventoryPackages = React.useMemo(() => {
+        return [...filteredInventoryPackages].sort((a, b) => {
+            const aMrp = Number(a.mrp) || 0;
+            const aB2b = Number(a.b2b_price) || 0;
+            const bMrp = Number(b.mrp) || 0;
+            const bB2b = Number(b.b2b_price) || 0;
+            const aYellow = aMrp <= 0 || aB2b <= 0 || aB2b > aMrp;
+            const bYellow = bMrp <= 0 || bB2b <= 0 || bB2b > bMrp;
+            if (aYellow && !bYellow) return -1;
+            if (!aYellow && bYellow) return 1;
+            return a.name.localeCompare(b.name);
+        });
+    }, [filteredInventoryPackages]);
+
+    // RTL-2: Filtered missing master package mappings (Red Alert)
+    const filteredMissingMaster = React.useMemo(() => {
+        if (!editingList?.missing_master_packages) return [];
+        const q = inventorySearchQuery.toLowerCase().trim();
+        if (!q) return editingList.missing_master_packages;
+        return editingList.missing_master_packages.filter(name =>
+            name.toLowerCase().includes(q)
+        );
+    }, [editingList?.missing_master_packages, inventorySearchQuery]);
+
     const hasEdits = React.useMemo(() => {
         if (packages.length !== originalPackages.length) return true;
         return packages.some(pkg => {
             const orig = originalPackages.find(o => o.id === pkg.id);
             if (!orig) return true;
             return pkg.name !== orig.name ||
-                pkg.mrp !== orig.mrp ||
-                pkg.b2b_price !== orig.b2b_price ||
+                (Number(pkg.mrp) || 0) !== orig.mrp ||
+                (Number(pkg.b2b_price) || 0) !== orig.b2b_price ||
                 (pkg.code_name || '') !== (orig.code_name || '');
         });
     }, [packages, originalPackages]);
 
     const handleGlobalSave = async () => {
         try {
-            const modified = packages.filter(pkg => {
+            const cleanPackages: Package[] = packages.map(pkg => ({
+                ...pkg,
+                mrp: Number(pkg.mrp) || 0,
+                b2b_price: Number(pkg.b2b_price) || 0
+            }));
+            const modified = cleanPackages.filter(pkg => {
                 const orig = originalPackages.find(o => o.id === pkg.id);
                 if (!orig) return false;
                 return pkg.name !== orig.name ||
@@ -478,7 +600,8 @@ const ManageLabs: React.FC = () => {
 
             setIsLoading(true);
             await Promise.all(modified.map(pkg => apiService.updatePackageInList(pkg)));
-            setOriginalPackages(JSON.parse(JSON.stringify(packages)));
+            setPackages(cleanPackages);
+            setOriginalPackages(JSON.parse(JSON.stringify(cleanPackages)));
             alert("All package inventory edits saved!");
             fetchData();
         } catch (error) {
@@ -489,61 +612,354 @@ const ManageLabs: React.FC = () => {
     };
 
     // ----------------------------------------------------
-    // Clone / Sync Wizard Modal
+    // RTL-3: Excel-like Grid Editing & Copy Handlers
     // ----------------------------------------------------
-    const openCloneModal = (list: PackageList, parentLab: Lab) => {
-        setCloneTargetList(list);
-
-        // Auto select that lab's mother ratelist
-        const motherList = allLists.find(l => l.name === `${parentLab.name} Mother Ratelist`);
-        if (motherList) {
-            setCloneSourceListId(motherList.id.toString());
-        } else {
-            setCloneSourceListId('');
-        }
-
-        setCloneDiscount('0');
-        setCloneMarkup('0');
-        setIsCloneOpen(true);
+    const copyRowData = (pkg: Package) => {
+        const text = `${pkg.code_name || ''}\t${pkg.name}\t${pkg.mrp}\t${pkg.b2b_price}`;
+        navigator.clipboard.writeText(text).then(() => {
+            setCopyFeedback(`Copied row: ${pkg.name}`);
+            setTimeout(() => setCopyFeedback(null), 2500);
+        }).catch(err => {
+            console.error("Clipboard copy failed:", err);
+        });
     };
 
-    const handleCloneSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!cloneTargetList || !cloneSourceListId) return;
+    const copyColumnData = (columnKey: 'code_name' | 'name' | 'mrp' | 'b2b_price') => {
+        const colLabels: Record<string, string> = {
+            code_name: 'Test Code',
+            name: 'Package Name',
+            mrp: 'MRP',
+            b2b_price: 'B2B Price'
+        };
+        const lines = sortedInventoryPackages.map(p => {
+            const val = p[columnKey];
+            return val !== undefined && val !== null ? String(val) : '';
+        });
+        const text = lines.join('\n');
+        navigator.clipboard.writeText(text).then(() => {
+            setCopyFeedback(`Copied ${colLabels[columnKey]} (${lines.length} items)`);
+            setTimeout(() => setCopyFeedback(null), 2500);
+        }).catch(err => {
+            console.error("Clipboard copy failed:", err);
+        });
+    };
 
-        try {
-            const sourceId = parseInt(cloneSourceListId, 10);
-            const disc = parseFloat(cloneDiscount) || 0;
-            const mark = parseFloat(cloneMarkup) || 0;
-
-            const res = await apiService.clonePackageList(cloneTargetList.id, sourceId, disc, mark);
-
-            // Auto rename target list name to store markup/discount and source list name
-            const sourceList = allLists.find(l => l.id === sourceId);
-            const sourceName = sourceList ? sourceList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim() : 'Mother Database';
-            const cleanTargetName = cloneTargetList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim();
-
-            let finalTargetName = cleanTargetName;
-            if (mark > 0) {
-                finalTargetName = `${cleanTargetName} (+${mark}% Markup from ${sourceName})`;
-            } else if (disc > 0) {
-                finalTargetName = `${cleanTargetName} (-${disc}% Discount from ${sourceName})`;
+    const toggleColumnSelect = (col: 'code_name' | 'name' | 'mrp' | 'b2b_price') => {
+        setSelectedCols(prev => {
+            const next = new Set(prev);
+            if (next.has(col)) {
+                next.delete(col);
             } else {
-                finalTargetName = `${cleanTargetName} (0% Markup from ${sourceName})`;
+                next.add(col);
             }
+            return next;
+        });
+    };
 
+    const selectAllColumns = () => {
+        setSelectedCols(new Set(['code_name', 'name', 'mrp', 'b2b_price']));
+    };
+
+    const clearColumnSelection = () => {
+        setSelectedCols(new Set());
+    };
+
+    const copySelectedColumnsData = () => {
+        if (selectedCols.size === 0) return;
+        const colOrder: Array<'code_name' | 'name' | 'mrp' | 'b2b_price'> = ['code_name', 'name', 'mrp', 'b2b_price'];
+        const activeCols = colOrder.filter(c => selectedCols.has(c));
+        const colNames: Record<string, string> = {
+            code_name: 'Code',
+            name: 'Name',
+            mrp: 'MRP',
+            b2b_price: 'B2B'
+        };
+        const lines = sortedInventoryPackages.map(pkg => {
+            return activeCols.map(c => {
+                const val = pkg[c];
+                return val !== undefined && val !== null ? String(val) : '';
+            }).join('\t');
+        });
+        const text = lines.join('\n');
+        navigator.clipboard.writeText(text).then(() => {
+            setCopyFeedback(`Copied [${activeCols.map(c => colNames[c]).join(', ')}] (${lines.length} rows)`);
+            setTimeout(() => setCopyFeedback(null), 2500);
+        }).catch(err => {
+            console.error("Clipboard copy failed:", err);
+        });
+    };
+
+    const handleGridKeyDown = (
+        e: React.KeyboardEvent<HTMLInputElement>,
+        rowIdx: number,
+        colIdx: number,
+        pkg: Package
+    ) => {
+        const input = e.currentTarget;
+
+        // Safe selection checks that never throw regardless of input type
+        let isAtEnd = true;
+        let isAtStart = true;
+        try {
+            if (input.selectionStart !== null && input.selectionEnd !== null) {
+                const isAllSelected = (input.selectionStart === 0 && input.selectionEnd === input.value.length);
+                isAtEnd = isAllSelected || input.selectionStart === input.value.length;
+                isAtStart = isAllSelected || (input.selectionStart === 0 && input.selectionEnd === 0);
+            }
+        } catch {
+            isAtEnd = true;
+            isAtStart = true;
+        }
+
+        // F2: edit in-place at end of cell (Excel convention)
+        if (e.key === 'F2') {
+            e.preventDefault();
             try {
-                await apiService.updatePackageListName(cloneTargetList.id, finalTargetName);
-            } catch (renameErr) {
-                console.error("Failed to rename rate list suffix:", renameErr);
+                input.setSelectionRange(input.value.length, input.value.length);
+            } catch {
+                // Ignore if not supported
             }
+            return;
+        }
 
-            alert(res.message || "Packages synced successfully!");
-            setIsCloneOpen(false);
-            setCloneTargetList(null);
-            fetchData();
+        // Tab & Shift+Tab across columns
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            let targetRow = rowIdx;
+            let targetCol = colIdx;
+            if (e.shiftKey) {
+                if (colIdx > 0) {
+                    targetCol = colIdx - 1;
+                } else if (rowIdx > 0) {
+                    targetRow = rowIdx - 1;
+                    targetCol = 3;
+                }
+            } else {
+                if (colIdx < 3) {
+                    targetCol = colIdx + 1;
+                } else if (rowIdx < sortedInventoryPackages.length - 1) {
+                    targetRow = rowIdx + 1;
+                    targetCol = 0;
+                }
+            }
+            const targetInput = document.querySelector<HTMLInputElement>(
+                `input[data-grid-row="${targetRow}"][data-grid-col="${targetCol}"]`
+            );
+            if (targetInput) {
+                targetInput.focus();
+                try { targetInput.select(); } catch {}
+            }
+            return;
+        }
+
+        // Arrow Down
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            const nextInput = document.querySelector<HTMLInputElement>(
+                `input[data-grid-row="${rowIdx + 1}"][data-grid-col="${colIdx}"]`
+            );
+            if (nextInput) {
+                nextInput.focus();
+                try { nextInput.select(); } catch {}
+            }
+            return;
+        }
+
+        // Arrow Up
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            const prevInput = document.querySelector<HTMLInputElement>(
+                `input[data-grid-row="${rowIdx - 1}"][data-grid-col="${colIdx}"]`
+            );
+            if (prevInput) {
+                prevInput.focus();
+                try { prevInput.select(); } catch {}
+            }
+            return;
+        }
+
+        // Arrow Right -> moves to next column (e.g. MRP into B2B price), or wraps to next row col 0
+        if (e.key === 'ArrowRight') {
+            if (isAtEnd) {
+                if (colIdx < 3) {
+                    e.preventDefault();
+                    const rightInput = document.querySelector<HTMLInputElement>(
+                        `input[data-grid-row="${rowIdx}"][data-grid-col="${colIdx + 1}"]`
+                    );
+                    if (rightInput) {
+                        rightInput.focus();
+                        try { rightInput.select(); } catch {}
+                    }
+                } else if (rowIdx < sortedInventoryPackages.length - 1) {
+                    e.preventDefault();
+                    const nextRowInput = document.querySelector<HTMLInputElement>(
+                        `input[data-grid-row="${rowIdx + 1}"][data-grid-col="0"]`
+                    );
+                    if (nextRowInput) {
+                        nextRowInput.focus();
+                        try { nextRowInput.select(); } catch {}
+                    }
+                }
+            }
+            return;
+        }
+
+        // Arrow Left -> moves to previous column (e.g. out of B2B price into MRP), or wraps to prev row col 3
+        if (e.key === 'ArrowLeft') {
+            if (isAtStart) {
+                if (colIdx > 0) {
+                    e.preventDefault();
+                    const leftInput = document.querySelector<HTMLInputElement>(
+                        `input[data-grid-row="${rowIdx}"][data-grid-col="${colIdx - 1}"]`
+                    );
+                    if (leftInput) {
+                        leftInput.focus();
+                        try { leftInput.select(); } catch {}
+                    }
+                } else if (rowIdx > 0) {
+                    e.preventDefault();
+                    const prevRowInput = document.querySelector<HTMLInputElement>(
+                        `input[data-grid-row="${rowIdx - 1}"][data-grid-col="3"]`
+                    );
+                    if (prevRowInput) {
+                        prevRowInput.focus();
+                        try { prevRowInput.select(); } catch {}
+                    }
+                }
+            }
+            return;
+        }
+
+        // Enter Key moves down (or up with Shift)
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const targetRow = e.shiftKey ? rowIdx - 1 : rowIdx + 1;
+            const targetInput = document.querySelector<HTMLInputElement>(
+                `input[data-grid-row="${targetRow}"][data-grid-col="${colIdx}"]`
+            );
+            if (targetInput) {
+                targetInput.focus();
+                try { targetInput.select(); } catch {}
+            }
+            return;
+        }
+
+        // Ctrl+C / Cmd+C: copy selected columns if active; otherwise copy row if cell unselected
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+            if (selectedCols.size > 0) {
+                e.preventDefault();
+                copySelectedColumnsData();
+                return;
+            }
+            let isCollapsed = false;
+            try {
+                isCollapsed = input.selectionStart === input.selectionEnd;
+            } catch {
+                isCollapsed = true;
+            }
+            if (isCollapsed) {
+                e.preventDefault();
+                copyRowData(pkg);
+            }
+            return;
+        }
+    };
+
+    const handleGridPaste = (
+        e: React.ClipboardEvent<HTMLInputElement>,
+        pkgId: number
+    ) => {
+        const text = e.clipboardData.getData('text/plain');
+        if (text && text.includes('\t')) {
+            e.preventDefault();
+            const line = text.split('\n')[0];
+            const parts = line.split('\t');
+            if (parts.length >= 2) {
+                setPackages(prev => prev.map(p => {
+                    if (p.id !== pkgId) return p;
+                    return {
+                        ...p,
+                        code_name: parts[0] || p.code_name,
+                        name: parts[1] || p.name,
+                        mrp: parts[2] !== undefined && parts[2] !== '' ? Number(parts[2]) : p.mrp,
+                        b2b_price: parts[3] !== undefined && parts[3] !== '' ? Number(parts[3]) : p.b2b_price
+                    };
+                }));
+                setCopyFeedback("Pasted row data from clipboard");
+                setTimeout(() => setCopyFeedback(null), 2500);
+            }
+        }
+    };
+
+    // ----------------------------------------------------
+    // RTL-3: Ratelist XLSX-Only Export Handler
+    // ----------------------------------------------------
+    const handleExportXLSX = async (listToExport?: PackageList, listPackages?: Package[]) => {
+        const list = listToExport || editingList;
+        const pkgs = listPackages || packages;
+        if (!list || pkgs.length === 0) {
+            alert("No packages available to export.");
+            return;
+        }
+        try {
+            const Excel = (window as any).ExcelJS || ExcelJS;
+            if (!Excel) {
+                alert("ExcelJS library is not loaded.");
+                return;
+            }
+            const workbook = new Excel.Workbook();
+            workbook.creator = 'T&C-LIS';
+            workbook.created = new Date();
+            const sheetName = list.name.slice(0, 31).replace(/[\\/?*[\]]/g, '_');
+            const worksheet = workbook.addWorksheet(sheetName);
+
+            worksheet.columns = [
+                { header: 'Test Code', key: 'code_name', width: 18 },
+                { header: 'Package Name', key: 'name', width: 40 },
+                { header: 'MRP', key: 'mrp', width: 15 },
+                { header: 'B2B Price', key: 'b2b_price', width: 15 },
+            ];
+
+            const headerRow = worksheet.getRow(1);
+            headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            headerRow.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FF1E293B' }
+            };
+            headerRow.height = 24;
+
+            pkgs.forEach(pkg => {
+                worksheet.addRow({
+                    code_name: pkg.code_name || '',
+                    name: pkg.name || '',
+                    mrp: Number(pkg.mrp) || 0,
+                    b2b_price: Number(pkg.b2b_price) || 0
+                });
+            });
+
+            const buffer = await workbook.xlsx.writeBuffer();
+            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const safeName = list.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+            a.download = `${safeName}_ratelist.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
         } catch (err: any) {
-            alert(`Cloning failed: ${err.message || err}`);
+            alert("Export to XLSX failed: " + (err.message || err));
+        }
+    };
+
+    const handleExportListXLSX = async (list: PackageList) => {
+        try {
+            const pkgs = await apiService.getPackagesForList(list.id);
+            await handleExportXLSX(list, pkgs);
+        } catch (err: any) {
+            alert("Failed to load packages for export: " + (err.message || err));
         }
     };
 
@@ -828,7 +1244,6 @@ const ManageLabs: React.FC = () => {
                                                                     return sortedLists.map(list => {
                                                                         const isClone = /\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name);
                                                                         const isMotherRatelist = !isClone && (list.name === `${lab.name} Mother Ratelist` || list.name.endsWith(' Mother Ratelist') || !!list.is_mother_ratelist);
-                                                                        const parsedInfo = parseMarkupDiscount(list.name);
                                                                         const cleanName = getCleanName(list.name);
                                                                         const hasRedOutline = !!list.has_red_outline;
                                                                         const hasYellowOutline = !!list.has_yellow_outline;
@@ -877,10 +1292,12 @@ const ManageLabs: React.FC = () => {
                                                                                                         {cleanName}
                                                                                                     </span>
                                                                                                 </RatelistLinkedClientsTooltip>
-                                                                                                {parsedInfo && (() => {
-                                                                                                    const motherList = labLists.find(pl => {
-                                                                                                        const isPlClone = /\(.*?\bfrom\b.*?\)/i.test(pl.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(pl.name);
-                                                                                                        return !isPlClone && (pl.name === `${lab.name} Mother Ratelist` || pl.name.endsWith(' Mother Ratelist') || !!pl.is_mother_ratelist);
+                                                                                                {(() => {
+                                                                                                    const parsedInfo = getMarkupInfo(list.name);
+                                                                                                    if (!parsedInfo) return null;
+                                                                                                    const motherList = allLists.find(l => {
+                                                                                                        const isMatch = l.name.endsWith(' Mother Ratelist') || l.name.toLowerCase().includes('mother');
+                                                                                                        return isMatch && lab.assigned_list_ids?.includes(l.id);
                                                                                                     });
                                                                                                     const fallbackMotherName = motherList
                                                                                                         ? motherList.name.replace(/\(([+-]?\d+(?:\.\d+)?%)\s*(Markup|Discount|PROFIT)?(?:\s+from\s+[^)]+)?\)/i, '').trim()
@@ -942,7 +1359,7 @@ const ManageLabs: React.FC = () => {
                                                                                                         setRenamingListId(list.id);
                                                                                                         setRenamingListName(getCleanName(list.name));
                                                                                                     }}
-                                                                                                    className="text-gray-400 hover:text-indigo-600 transition-colors p-0.5 shrink-0"
+                                                                                                    className="text-gray-400 hover:text-indigo-600 transition-colors p-0.5 shrink-0 -translate-y-[3px] inline-flex items-center self-center"
                                                                                                     title="Rename Database"
                                                                                                 >
                                                                                                     <i className="fa-solid fa-pen text-[9px]"></i>
@@ -967,6 +1384,14 @@ const ManageLabs: React.FC = () => {
                                                                                         title="Import Excel (.xlsx) into this ratelist"
                                                                                     >
                                                                                         <i className="fa-solid fa-file-import text-[9px]"></i> XLSX
+                                                                                    </button>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() => handleExportListXLSX(list)}
+                                                                                        className="px-2 py-1 bg-gray-50 hover:bg-emerald-600 hover:text-white rounded border border-gray-200 hover:border-emerald-700 transition-all font-bold text-[10px] text-gray-600 flex items-center gap-1 shadow-sm cursor-pointer"
+                                                                                        title="Export Ratelist as Excel (.xlsx)"
+                                                                                    >
+                                                                                        <i className="fa-solid fa-download text-[9px]"></i> Export
                                                                                     </button>
                                                                                     <button
                                                                                         disabled={isMotherRatelist}
@@ -1026,7 +1451,7 @@ const ManageLabs: React.FC = () => {
                                                                         options={[
                                                                             { value: '', label: '-- Choose Database --' },
                                                                             ...allLists
-                                                                                .filter(l => !lab.assigned_list_ids?.includes(l.id))
+                                                                                .filter(l => !lab.assigned_list_ids?.includes(l.id) && !isMotherRatelistName(l.name))
                                                                                 .map(l => ({ value: l.id.toString(), label: `${l.name} (#${l.id})` }))
                                                                         ]}
                                                                         value={quickAssignListId[lab.id] || ''}
@@ -1089,7 +1514,16 @@ const ManageLabs: React.FC = () => {
                             </div>
 
                             <div className="space-y-1 flex-grow overflow-y-auto max-h-[300px] custom-scrollbar-minimal pr-2 border border-gray-150 p-2 rounded-lg my-2">
-                                {allLists.map(list => {
+                                {allLists
+                                    .filter(list => {
+                                        const isListClone = /\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name);
+                                        const isMotherForLab = !isListClone && (list.name === `${syncingLab.name} Mother Ratelist` || (list.name.endsWith(' Mother Ratelist') && list.name.startsWith(syncingLab.name)));
+                                        if (isMotherRatelistName(list.name) && !isMotherForLab) {
+                                            return false;
+                                        }
+                                        return true;
+                                    })
+                                    .map(list => {
                                     const isListClone = /\(.*?\bfrom\b.*?\)/i.test(list.name) || /\([+-]?\d+(?:\.\d+)?%\s*(?:Markup|Discount|PROFIT)/i.test(list.name);
                                     const isMotherForLab = !isListClone && (list.name === `${syncingLab.name} Mother Ratelist` || (list.name.endsWith(' Mother Ratelist') && list.name.startsWith(syncingLab.name)));
                                     return (
@@ -1201,73 +1635,332 @@ const ManageLabs: React.FC = () => {
                             </div>
                         )}
 
-                        {/* Search packages inside modal */}
+                        {/* Search packages inside modal & Download XLSX */}
                         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-4">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                                 <i className="fa-solid fa-cubes text-slate-400 text-xs"></i>
-                                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Packages ({filteredInventoryPackages.length} items)</span>
+                                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Packages ({sortedInventoryPackages.length} items)</span>
+                                {copyFeedback && (
+                                    <span className="ml-2 text-[10px] bg-slate-800 text-white font-mono px-2 py-0.5 rounded shadow animate-in fade-in flex items-center gap-1">
+                                        <i className="fa-solid fa-check text-emerald-400 text-[9px]"></i>
+                                        {copyFeedback}
+                                    </span>
+                                )}
                             </div>
-                            <div className="relative w-full sm:w-72">
-                                <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
-                                <input
-                                    type="text"
-                                    value={inventorySearchQuery}
-                                    onChange={e => setInventorySearchQuery(e.target.value)}
-                                    placeholder="Search package name or code..."
-                                    className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg bg-gray-50/50 focus:bg-white focus:ring-2 focus:ring-blue-100 outline-none text-xs font-medium transition-all"
-                                />
+                            <div className="flex items-center gap-2 w-full sm:w-auto">
+                                <div className="relative flex-grow sm:w-72">
+                                    <i className="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
+                                    <input
+                                        type="text"
+                                        value={inventorySearchQuery}
+                                        onChange={e => setInventorySearchQuery(e.target.value)}
+                                        placeholder="Search package name or code..."
+                                        className="w-full pl-9 pr-3 py-2 border border-gray-200 rounded-lg bg-gray-50/50 focus:bg-white focus:ring-2 focus:ring-blue-100 outline-none text-xs font-medium transition-all"
+                                    />
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => handleExportXLSX()}
+                                    className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-sm flex items-center gap-1.5 shrink-0 transition-all cursor-pointer"
+                                    title="Export Ratelist to Excel (.xlsx only)"
+                                >
+                                    <i className="fa-solid fa-file-excel text-xs"></i>
+                                    Download XLSX
+                                </button>
                             </div>
                         </div>
+
+                        {/* Multi-column Selection Banner */}
+                        {selectedCols.size > 0 && (
+                            <div className="bg-blue-50/90 border border-blue-200 rounded-lg px-3.5 py-2 mb-2 flex items-center justify-between gap-3 text-xs shadow-sm">
+                                <div className="flex items-center gap-2 text-blue-900 font-semibold">
+                                    <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse"></span>
+                                    <span>
+                                        {selectedCols.size} {selectedCols.size === 1 ? 'column' : 'columns'} selected
+                                    </span>
+                                    <span className="text-blue-500 font-normal">
+                                        (Ctrl+C or click button to copy {Array.from(selectedCols).map(c => ({ code_name: 'Code', name: 'Name', mrp: 'MRP', b2b_price: 'B2B' }[c])).join(', ')})
+                                    </span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={copySelectedColumnsData}
+                                        className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded text-[11px] shadow-sm flex items-center gap-1.5 transition-all cursor-pointer"
+                                        title="Copy selected columns (TSV format for Excel)"
+                                    >
+                                        <i className="fa-regular fa-copy text-[10px]"></i>
+                                        Copy Selected
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={selectAllColumns}
+                                        className="px-2 py-1 bg-white hover:bg-blue-50 text-blue-800 border border-blue-200 font-bold rounded text-[11px] transition-all cursor-pointer"
+                                    >
+                                        Select All
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={clearColumnSelection}
+                                        className="px-2 py-1 bg-white hover:bg-gray-100 text-gray-600 border border-gray-200 font-medium rounded text-[11px] transition-all cursor-pointer"
+                                    >
+                                        Clear
+                                    </button>
+                                </div>
+                            </div>
+                        )}
 
                         {/* Existing packages table */}
                         <div className="overflow-y-auto flex-grow rounded-lg border border-gray-200 bg-white shadow-inner custom-scrollbar-minimal">
                             <table className="w-full text-sm divide-y divide-gray-100">
                                 <thead className="bg-gray-50 sticky top-0 z-10">
                                     <tr>
-                                        <th className="p-2 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest pl-4 border-b border-gray-200 w-36">Test Code</th>
-                                        <th className="p-2 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-200">Package Name</th>
-                                        <th className="p-2 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-24 border-b border-gray-200">MRP</th>
-                                        <th className="p-2 text-left text-[10px] font-bold text-gray-500 uppercase tracking-widest w-24 border-b border-gray-200">B2B Price</th>
-                                        <th className="p-2 text-center text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-200">Actions</th>
+                                        <th
+                                            onClick={() => toggleColumnSelect('code_name')}
+                                            className={`p-2 text-left text-[10px] font-bold uppercase tracking-widest pl-4 border-b cursor-pointer transition-colors select-none w-36 ${
+                                                selectedCols.has('code_name')
+                                                    ? 'bg-blue-100 text-blue-900 border-blue-400'
+                                                    : 'text-gray-500 hover:bg-gray-100 border-gray-200'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-1">
+                                                <label className="flex items-center gap-1.5 cursor-pointer" onClick={e => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedCols.has('code_name')}
+                                                        onChange={() => toggleColumnSelect('code_name')}
+                                                        className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-400 cursor-pointer"
+                                                    />
+                                                    <span>Test Code</span>
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    onClick={e => { e.stopPropagation(); copyColumnData('code_name'); }}
+                                                    className="text-gray-400 hover:text-gray-700 text-[10px] p-0.5 rounded hover:bg-white/60"
+                                                    title="Copy Test Code column to clipboard"
+                                                >
+                                                    <i className="fa-regular fa-copy"></i>
+                                                </button>
+                                            </div>
+                                        </th>
+                                        <th
+                                            onClick={() => toggleColumnSelect('name')}
+                                            className={`p-2 text-left text-[10px] font-bold uppercase tracking-widest border-b cursor-pointer transition-colors select-none ${
+                                                selectedCols.has('name')
+                                                    ? 'bg-blue-100 text-blue-900 border-blue-400'
+                                                    : 'text-gray-500 hover:bg-gray-100 border-gray-200'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-1">
+                                                <label className="flex items-center gap-1.5 cursor-pointer" onClick={e => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedCols.has('name')}
+                                                        onChange={() => toggleColumnSelect('name')}
+                                                        className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-400 cursor-pointer"
+                                                    />
+                                                    <span>Package Name</span>
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    onClick={e => { e.stopPropagation(); copyColumnData('name'); }}
+                                                    className="text-gray-400 hover:text-gray-700 text-[10px] p-0.5 rounded hover:bg-white/60"
+                                                    title="Copy Package Name column to clipboard"
+                                                >
+                                                    <i className="fa-regular fa-copy"></i>
+                                                </button>
+                                            </div>
+                                        </th>
+                                        <th
+                                            onClick={() => toggleColumnSelect('mrp')}
+                                            className={`p-2 text-left text-[10px] font-bold uppercase tracking-widest w-28 border-b cursor-pointer transition-colors select-none ${
+                                                selectedCols.has('mrp')
+                                                    ? 'bg-blue-100 text-blue-900 border-blue-400'
+                                                    : 'text-gray-500 hover:bg-gray-100 border-gray-200'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-1">
+                                                <label className="flex items-center gap-1.5 cursor-pointer" onClick={e => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedCols.has('mrp')}
+                                                        onChange={() => toggleColumnSelect('mrp')}
+                                                        className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-400 cursor-pointer"
+                                                    />
+                                                    <span>MRP</span>
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    onClick={e => { e.stopPropagation(); copyColumnData('mrp'); }}
+                                                    className="text-gray-400 hover:text-gray-700 text-[10px] p-0.5 rounded hover:bg-white/60"
+                                                    title="Copy MRP column to clipboard"
+                                                >
+                                                    <i className="fa-regular fa-copy"></i>
+                                                </button>
+                                            </div>
+                                        </th>
+                                        <th
+                                            onClick={() => toggleColumnSelect('b2b_price')}
+                                            className={`p-2 text-left text-[10px] font-bold uppercase tracking-widest w-28 border-b cursor-pointer transition-colors select-none ${
+                                                selectedCols.has('b2b_price')
+                                                    ? 'bg-blue-100 text-blue-900 border-blue-400'
+                                                    : 'text-gray-500 hover:bg-gray-100 border-gray-200'
+                                            }`}
+                                        >
+                                            <div className="flex items-center justify-between gap-1">
+                                                <label className="flex items-center gap-1.5 cursor-pointer" onClick={e => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedCols.has('b2b_price')}
+                                                        onChange={() => toggleColumnSelect('b2b_price')}
+                                                        className="w-3.5 h-3.5 rounded text-blue-600 focus:ring-blue-400 cursor-pointer"
+                                                    />
+                                                    <span>B2B Price</span>
+                                                </label>
+                                                <button
+                                                    type="button"
+                                                    onClick={e => { e.stopPropagation(); copyColumnData('b2b_price'); }}
+                                                    className="text-gray-400 hover:text-gray-700 text-[10px] p-0.5 rounded hover:bg-white/60"
+                                                    title="Copy B2B Price column to clipboard"
+                                                >
+                                                    <i className="fa-regular fa-copy"></i>
+                                                </button>
+                                            </div>
+                                        </th>
+                                        <th className="p-2 text-center text-[10px] font-bold text-gray-500 uppercase tracking-widest border-b border-gray-200 w-28">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-50">
-                                    {filteredInventoryPackages.map(pkg => {
-                                        const isUnconfigured = pkg.mrp <= 0 || pkg.b2b_price <= 0 || pkg.b2b_price > pkg.mrp;
+                                    {/* RTL-2: Red Alert Mappings at the very TOP */}
+                                    {filteredMissingMaster.length > 0 && (
+                                        <>
+                                            <tr className="bg-red-50/90 border-y border-red-200">
+                                                <td colSpan={5} className="py-2 px-4 text-[10px] font-black text-red-700 uppercase tracking-widest bg-red-100/60">
+                                                    <i className="fa-solid fa-triangle-exclamation mr-1.5 text-red-600"></i>
+                                                    Red Alert Mappings: Missing Master Packages ({filteredMissingMaster.length})
+                                                </td>
+                                            </tr>
+                                            {filteredMissingMaster.map((missingName, idx) => (
+                                                <tr key={`missing-${idx}`} className="bg-red-50/40 border-l-4 border-red-500 border-b border-red-100 hover:bg-red-100/60 transition-colors">
+                                                    <td className="p-1 pl-4 text-xs text-red-600 font-mono font-bold">
+                                                        UNMAPPED
+                                                    </td>
+                                                    <td className="p-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black bg-red-600 text-white uppercase shrink-0">Red Alert</span>
+                                                            <span className="text-xs font-bold text-red-950">{missingName}</span>
+                                                        </div>
+                                                    </td>
+                                                    <td className="p-1 text-xs text-red-400 font-mono italic pl-4">₹0.00</td>
+                                                    <td className="p-1 text-xs text-red-400 font-mono italic pl-4">₹0.00</td>
+                                                    <td className="p-1 text-center">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleAcceptMissingMaster([missingName])}
+                                                            className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-[10px] font-bold shadow-sm transition-all flex items-center gap-1 mx-auto"
+                                                            title="Map & insert into ratelist"
+                                                        >
+                                                            <i className="fa-solid fa-plus-circle text-[9px]"></i> Map & Insert
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </>
+                                    )}
+
+                                    {/* RTL-2: Yellow Alert Items (first) followed by normal configured items */}
+                                    {sortedInventoryPackages.map((pkg, rowIdx) => {
+                                        const numMrp = Number(pkg.mrp) || 0;
+                                        const numB2b = Number(pkg.b2b_price) || 0;
+                                        const isUnconfigured = numMrp <= 0 || numB2b <= 0 || numB2b > numMrp;
                                         return (
                                             <tr key={pkg.id} className={`transition-colors group ${isUnconfigured ? 'bg-yellow-50/90 border-l-4 border-yellow-500 ring-1 ring-inset ring-yellow-400' : 'hover:bg-gray-50/50'}`}>
-                                                <td className="p-1 pl-4 w-36">
+                                                <td className={`p-1 pl-4 w-36 transition-colors ${selectedCols.has('code_name') ? 'bg-blue-50/70 border-x border-blue-100' : ''}`}>
                                                     <input
+                                                        data-grid-row={rowIdx}
+                                                        data-grid-col={0}
                                                         value={pkg.code_name || ''}
                                                         onChange={e => handlePackageChange(pkg.id, 'code_name', e.target.value)}
+                                                        onKeyDown={e => handleGridKeyDown(e, rowIdx, 0, pkg)}
+                                                        onPaste={e => handleGridPaste(e, pkg.id)}
                                                         placeholder="N/A"
                                                         className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm font-mono animate-none"
                                                     />
                                                 </td>
-                                                <td className="p-1">
+                                                <td className={`p-1 transition-colors ${selectedCols.has('name') ? 'bg-blue-50/70 border-x border-blue-100' : ''}`}>
                                                     <div className="flex items-center gap-1.5">
-                                                        <input value={pkg.name} onChange={e => handlePackageChange(pkg.id, 'name', e.target.value)} className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm" />
+                                                        <input
+                                                            data-grid-row={rowIdx}
+                                                            data-grid-col={1}
+                                                            value={pkg.name}
+                                                            onChange={e => handlePackageChange(pkg.id, 'name', e.target.value)}
+                                                            onKeyDown={e => handleGridKeyDown(e, rowIdx, 1, pkg)}
+                                                            onPaste={e => handleGridPaste(e, pkg.id)}
+                                                            className="w-full p-1.5 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none font-medium text-gray-755 text-sm"
+                                                        />
                                                         {isUnconfigured && (
-                                                            <PriceAlertTooltip mrp={pkg.mrp} b2b_price={pkg.b2b_price} />
+                                                            <PriceAlertTooltip mrp={numMrp} b2b_price={numB2b} />
                                                         )}
                                                     </div>
                                                 </td>
-                                                <td className="p-1">
+                                                <td className={`p-1 transition-colors ${selectedCols.has('mrp') ? 'bg-blue-50/70 border-x border-blue-100' : ''}`}>
                                                     <div className="relative">
                                                         <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-gray-300 text-[10px]">₹</span>
-                                                        <input type="number" value={pkg.mrp} onChange={e => handlePackageChange(pkg.id, 'mrp', Number(e.target.value))} className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-gray-600 text-sm" />
+                                                        <input
+                                                            data-grid-row={rowIdx}
+                                                            data-grid-col={2}
+                                                            type="text"
+                                                            inputMode="decimal"
+                                                            value={pkg.mrp !== undefined && pkg.mrp !== null ? String(pkg.mrp) : ''}
+                                                            onChange={e => {
+                                                                const val = e.target.value.replace(/[^0-9.]/g, '');
+                                                                handlePackageChange(pkg.id, 'mrp', val);
+                                                            }}
+                                                            onBlur={e => {
+                                                                const num = parseFloat(e.target.value);
+                                                                handlePackageChange(pkg.id, 'mrp', isNaN(num) ? 0 : num);
+                                                            }}
+                                                            onKeyDown={e => handleGridKeyDown(e, rowIdx, 2, pkg)}
+                                                            onPaste={e => handleGridPaste(e, pkg.id)}
+                                                            className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-gray-600 text-sm font-mono"
+                                                        />
                                                     </div>
                                                 </td>
-                                                <td className="p-1">
+                                                <td className={`p-1 transition-colors ${selectedCols.has('b2b_price') ? 'bg-blue-50/70 border-x border-blue-100' : ''}`}>
                                                     <div className="relative font-bold">
                                                         <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-blue-200 text-[10px]">₹</span>
-                                                        <input type="number" value={pkg.b2b_price} onChange={e => handlePackageChange(pkg.id, 'b2b_price', Number(e.target.value))} className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-blue-700 font-bold text-sm" />
+                                                        <input
+                                                            data-grid-row={rowIdx}
+                                                            data-grid-col={3}
+                                                            type="text"
+                                                            inputMode="decimal"
+                                                            value={pkg.b2b_price !== undefined && pkg.b2b_price !== null ? String(pkg.b2b_price) : ''}
+                                                            onChange={e => {
+                                                                const val = e.target.value.replace(/[^0-9.]/g, '');
+                                                                handlePackageChange(pkg.id, 'b2b_price', val);
+                                                            }}
+                                                            onBlur={e => {
+                                                                const num = parseFloat(e.target.value);
+                                                                handlePackageChange(pkg.id, 'b2b_price', isNaN(num) ? 0 : num);
+                                                            }}
+                                                            onKeyDown={e => handleGridKeyDown(e, rowIdx, 3, pkg)}
+                                                            onPaste={e => handleGridPaste(e, pkg.id)}
+                                                            className="w-full p-1.5 pl-4 bg-transparent border-b border-transparent focus:border-yellow-400 outline-none text-blue-700 font-bold text-sm font-mono"
+                                                        />
                                                     </div>
                                                 </td>
                                                 <td className="p-1 text-center">
                                                     <div className="flex items-center gap-1.5 justify-center">
                                                         <button onClick={() => handleSavePackage(pkg)} className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-blue-600 hover:text-white rounded border border-gray-100 transition-all shrink-0" title="Save Product">
                                                             <i className="fa-solid fa-floppy-disk text-[10px]"></i>
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => copyRowData(pkg)}
+                                                            className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-slate-700 hover:text-white rounded border border-gray-100 transition-all shrink-0"
+                                                            title="Copy Row to clipboard (Excel TSV)"
+                                                        >
+                                                            <i className="fa-regular fa-copy text-[10px]"></i>
                                                         </button>
                                                         <button onClick={() => handleDeletePackage(pkg.id)} className="w-7 h-7 flex items-center justify-center bg-gray-50 text-gray-400 hover:bg-red-600 hover:text-white rounded border border-gray-100 transition-all shrink-0 animate-none" title="Delete Product">
                                                             <i className="fa-solid fa-trash-can text-[10px]"></i>
@@ -1278,43 +1971,7 @@ const ManageLabs: React.FC = () => {
                                         );
                                     })}
 
-                                    {/* Greyed-out rows for missing Master Ratelist packages */}
-                                    {editingList.missing_master_packages && editingList.missing_master_packages.length > 0 && (
-                                        <>
-                                            <tr className="bg-slate-100">
-                                                <td colSpan={5} className="py-2 px-4 text-[10px] font-black text-slate-500 uppercase tracking-widest bg-slate-100 border-y border-slate-200">
-                                                    <i className="fa-solid fa-layer-group mr-1.5 text-slate-400"></i>
-                                                    Missing Canonical Master Packages ({editingList.missing_master_packages.length})
-                                                </td>
-                                            </tr>
-                                            {editingList.missing_master_packages.map((missingName, idx) => (
-                                                <tr key={`missing-${idx}`} className="bg-slate-50/70 border-b border-dashed border-slate-200 opacity-80 hover:opacity-100 transition-opacity">
-                                                    <td className="p-1 pl-4 text-xs text-slate-400 font-mono italic">
-                                                        PENDING
-                                                    </td>
-                                                    <td className="p-1">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="px-1.5 py-0.5 rounded text-[8px] font-black bg-slate-200 text-slate-700 uppercase shrink-0">Master</span>
-                                                            <span className="text-xs font-bold text-slate-700">{missingName}</span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-1 text-xs text-slate-400 font-mono italic pl-4">₹0.00</td>
-                                                    <td className="p-1 text-xs text-slate-400 font-mono italic pl-4">₹0.00</td>
-                                                    <td className="p-1 text-center">
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => handleAcceptMissingMaster([missingName])}
-                                                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold shadow-sm transition-all flex items-center gap-1 mx-auto"
-                                                        >
-                                                            <i className="fa-solid fa-check text-[9px]"></i> Accept
-                                                        </button>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </>
-                                    )}
-
-                                    {filteredInventoryPackages.length === 0 && (!editingList.missing_master_packages || editingList.missing_master_packages.length === 0) && (
+                                    {sortedInventoryPackages.length === 0 && filteredMissingMaster.length === 0 && (
                                         <tr>
                                             <td colSpan={5} className="text-center py-12 text-gray-400 italic text-xs uppercase tracking-wider font-bold">
                                                 No packages match your search filter
@@ -1352,14 +2009,14 @@ const ManageLabs: React.FC = () => {
                                     <i className="fa-solid fa-sync text-xs animate-spin-slow"></i>
                                 </div>
                                 <div>
-                                    <h2 className="text-base font-bold text-gray-800">Sync & Scale Wizard</h2>
+                                    <h2 className="text-base font-bold text-gray-800">Sync &amp; Scale Wizard</h2>
                                     <p className="text-[10px] text-gray-450 font-bold uppercase tracking-wider">Target: {cloneTargetList.name}</p>
                                 </div>
                             </div>
 
                             <div className="space-y-3.5 text-xs text-slate-650">
                                 <div className="bg-blue-50 border border-blue-150 p-3 rounded-lg text-[10px] text-blue-800">
-                                    <strong>💡 Sync Notice:</strong> This operation clears all existing items in the target database and clones all packages from the selected mother/source database, applying the requested scaling.
+                                    <strong>Sync Notice:</strong> This operation clears all existing items in the target database and clones all packages from the selected mother/source database, applying the requested scaling.
                                 </div>
 
                                 <fieldset className="border border-slate-200 p-4 rounded-xl bg-slate-50/50 space-y-3">
@@ -1373,7 +2030,18 @@ const ManageLabs: React.FC = () => {
                                             options={[
                                                 { value: '', label: '-- Select Source Database --' },
                                                 ...allLists
-                                                    .filter(l => l.id !== cloneTargetList.id)
+                                                    .filter(l => {
+                                                        if (l.id === cloneTargetList.id) return false;
+                                                        const isMother = isMotherRatelistName(l.name);
+                                                        if (isMother) {
+                                                            const isMotherForTargetLab = cloneTargetLab && (
+                                                                l.name === `${cloneTargetLab.name} Mother Ratelist` ||
+                                                                (l.name.endsWith(' Mother Ratelist') && l.name.startsWith(cloneTargetLab.name))
+                                                            );
+                                                            return !!isMotherForTargetLab;
+                                                        }
+                                                        return true;
+                                                    })
                                                     .map(l => ({ value: l.id.toString(), label: `${l.name} (${l.package_count || 0} items)` }))
                                             ]}
                                             value={cloneSourceListId}
@@ -1412,14 +2080,12 @@ const ManageLabs: React.FC = () => {
 
                             <div className="flex justify-end gap-2 pt-4 border-t border-gray-300">
                                 <button type="button" onClick={() => setIsCloneOpen(false)} className="px-4 py-2 bg-gray-100 text-gray-650 rounded-lg hover:bg-gray-250 font-bold text-xs transition-all">Cancel</button>
-                                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold text-xs transition-all shadow-sm">Clone & Apply</button>
+                                <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-bold text-xs transition-all shadow-sm">Clone &amp; Apply</button>
                             </div>
                         </form>
                     </div>
                 </div>
             )}
-
-            {/* Modal: Add Alias to Master Package */}
             {aliasModalPkg && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 p-4">
                     <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-200">
